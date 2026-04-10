@@ -252,10 +252,12 @@ export default function App() {
       const data = await callClaude({ model:"claude-sonnet-4-5", max_tokens:600,
         messages:[{ role:"user", content:
           `You are an email composer for Matthew Bright, CEO of ClosingPilot.${ctx}
+CRITICAL — GHL adds the sender signature automatically. Do NOT put any sign-off, closing, or signature in greeting or body. No "Best regards", no "Sincerely", no sender name (e.g. Matthew Bright), no title (e.g. CEO), no company name (e.g. ClosingPilot). If you include those, the email shows the signature twice. The body ends with the last sentence of the message — nothing after that (no trailing closings or blank lines for a signature).
+
 Extract fields and return ONLY valid JSON — no other text. Keys must be exactly these seven, no extras:
 {"first_name":"","last_name":"","email":"","subject":"","greeting":"Hi [first_name],","body":"[main message 2-3 sentences]","missing_email":false}
 If no email address provided, set missing_email:true.
-- greeting: MUST be exactly "Hi {FirstName}," with the recipient's actual first name — that format only, nothing added.
+- greeting: MUST be exactly "Hi {FirstName}," with the recipient's actual first name — that format only, nothing added (no closings or signature text in greeting).
 - body: ONLY the main message, 2-3 short professional sentences. No greeting, no sign-off, no signature — GHL supplies the signature.
 - Do not include a signature field or any closing/signature text anywhere in the JSON.
 Request: "${userText}"` }] });
