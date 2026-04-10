@@ -19,8 +19,8 @@ EMAIL RULES — NON-NEGOTIABLE:
 - You have a send_email tool. It works. Use it.
 - NEVER write email content as plain text in your response under any circumstances.
 - When Matthew asks to send, draft, write, or compose an email: call send_email immediately.
-- Required: first_name, last_name, email, subject, greeting, body, signature. If email address is missing, ask once. Then call the tool.
-- greeting = short salutation with their first name (plain text). body = main message only (2–3 sentences). signature = HTML sign-off with <br> between lines (Matthew Bright, CEO, ClosingPilot).
+- Required: first_name, last_name, email, subject, greeting, body. If email address is missing, ask once. Then call the tool.
+- greeting MUST be exactly: Hi [first_name], with their real first name (plain text). body = main message only (2–3 sentences); no greeting, no sign-off — GHL adds the signature.
 - After calling send_email, confirm briefly: "Email queued — hit Send via GHL to fire it."
 - Do NOT explain the tool. Do NOT say it is unavailable. It is available. Call it.`;
 
@@ -40,11 +40,10 @@ const TOOLS = [
         email:      { type: "string" },
         phone:      { type: "string" },
         subject:    { type: "string" },
-        greeting:   { type: "string", description: "Salutation, e.g. Hi Sarah," },
-        body:       { type: "string", description: "Main message only, 2–3 sentences; no greeting or sign-off." },
-        signature:  { type: "string", description: "HTML sign-off, e.g. Best regards,<br>Matthew Bright<br>CEO, ClosingPilot" }
+        greeting:   { type: "string", description: "Exactly: Hi Firstname, (comma at end). Nothing else." },
+        body:       { type: "string", description: "Main message only, 2–3 sentences; no greeting or sign-off (GHL adds signature)." }
       },
-      required: ["first_name", "last_name", "email", "subject", "greeting", "body", "signature"]
+      required: ["first_name", "last_name", "email", "subject", "greeting", "body"]
     }
   },
   {
@@ -101,18 +100,17 @@ const ToolBadge = ({ name, status }) => {
 
 const htmlToPlain = (s) => (s || "").replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]+>/g, "").trim();
 
-const EmailCard = ({ first_name, last_name, email, phone, subject, body, greeting, signature }) => {
+const EmailCard = ({ first_name, last_name, email, phone, subject, body, greeting, missing_email }) => {
   const [ghlStatus, setGhlStatus] = useState("ready");
   const [copied, setCopied]       = useState(false);
   const displayName = [first_name, last_name].filter(Boolean).join(" ");
   const g = greeting ?? "";
   const b = body ?? "";
-  const sig = signature ?? "";
 
   const fireGHL = async () => {
     setGhlStatus("sending");
     try {
-      const payload = { first_name, last_name, email, subject, greeting: g, body: b, signature: sig };
+      const payload = { first_name, last_name, email, subject, greeting: g, body: b };
       if (phone) payload.phone = phone;
       const res = await fetch(GHL_WEBHOOK, {
         method: "POST",
@@ -125,7 +123,8 @@ const EmailCard = ({ first_name, last_name, email, phone, subject, body, greetin
   };
 
   const copyPayload = () => {
-    navigator.clipboard.writeText(JSON.stringify({ first_name, last_name, email, phone, subject, greeting: g, body: b, signature: sig }, null, 2));
+    const o = { first_name, last_name, email, subject, greeting: g, body: b, missing_email: !!missing_email };
+    navigator.clipboard.writeText(JSON.stringify(o, null, 2));
     setCopied(true); setTimeout(() => setCopied(false), 2500);
   };
 
@@ -136,16 +135,15 @@ const EmailCard = ({ first_name, last_name, email, phone, subject, body, greetin
       <div style={{ fontSize:12, color:"#999", marginBottom:8 }}>Subject: <span style={{ color:"#D4CEBE", fontWeight:500 }}>{subject}</span></div>
       <div style={{ fontSize:12, color:"#C0BAB0", lineHeight:1.7, borderTop:"0.5px solid rgba(255,255,255,0.06)", paddingTop:8 }}>
         {g ? <div style={{ marginBottom:8 }}>{g}</div> : null}
-        {b ? <div style={{ whiteSpace:"pre-wrap", marginBottom: g && sig ? 8 : 0 }}>{b}</div> : null}
-        {sig ? <div dangerouslySetInnerHTML={{ __html: sig }} /> : null}
-        {!g && !b && !sig && body ? <div style={{ whiteSpace:"pre-wrap" }}>{body}</div> : null}
+        {b ? <div style={{ whiteSpace:"pre-wrap" }}>{b}</div> : null}
+        {!g && !b && body ? <div style={{ whiteSpace:"pre-wrap" }}>{body}</div> : null}
       </div>
       <div style={{ display:"flex", gap:8, marginTop:10, flexWrap:"wrap" }}>
         <button onClick={fireGHL} disabled={ghlStatus==="sending"||ghlStatus==="sent"}
           style={{ padding:"6px 12px", background:ghlStatus==="sent"?"rgba(74,222,128,0.15)":"rgba(200,168,75,0.15)", border:`0.5px solid ${ghlStatus==="sent"?"rgba(74,222,128,0.4)":"rgba(200,168,75,0.35)"}`, borderRadius:8, color:ghlStatus==="sent"?"#4ADE80":"#C8A84B", fontSize:11, cursor:"pointer" }}>
           {ghlStatus==="sent" ? "✓ Sent via GHL" : ghlStatus==="sending" ? "Firing..." : ghlStatus==="error" ? "✕ Failed — retry" : "⚡ Fire to GHL"}
         </button>
-        <a href={`mailto:${email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent([htmlToPlain(g), htmlToPlain(b), htmlToPlain(sig)].filter(Boolean).join("\n\n") || htmlToPlain(body))}`}
+        <a href={`mailto:${email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent([htmlToPlain(g), htmlToPlain(b)].filter(Boolean).join("\n\n") || htmlToPlain(body))}`}
           style={{ padding:"6px 12px", background:"rgba(83,74,183,0.12)", border:"0.5px solid rgba(127,119,221,0.3)", borderRadius:8, color:"#AFA9EC", fontSize:11, textDecoration:"none" }}>
           Open in Mail
         </a>
@@ -254,12 +252,12 @@ export default function App() {
       const data = await callClaude({ model:"claude-sonnet-4-5", max_tokens:600,
         messages:[{ role:"user", content:
           `You are an email composer for Matthew Bright, CEO of ClosingPilot.${ctx}
-Extract fields and return ONLY valid JSON — no other text:
-{"first_name":"","last_name":"","email":"","subject":"","greeting":"Hi [first_name],","body":"[main message 2-3 sentences]","signature":"Best regards,<br>Matthew Bright<br>CEO, ClosingPilot","missing_email":false}
+Extract fields and return ONLY valid JSON — no other text. Keys must be exactly these seven, no extras:
+{"first_name":"","last_name":"","email":"","subject":"","greeting":"Hi [first_name],","body":"[main message 2-3 sentences]","missing_email":false}
 If no email address provided, set missing_email:true.
-- greeting: salutation with the recipient's actual first name (plain text, e.g. "Hi Sarah,").
-- body: ONLY the main message, 2-3 short professional sentences. Do not include the greeting or sign-off.
-- signature: HTML line breaks between lines; sign as Matthew Bright, CEO, ClosingPilot (match the example shape).
+- greeting: MUST be exactly "Hi {FirstName}," with the recipient's actual first name — that format only, nothing added.
+- body: ONLY the main message, 2-3 short professional sentences. No greeting, no sign-off, no signature — GHL supplies the signature.
+- Do not include a signature field or any closing/signature text anywhere in the JSON.
 Request: "${userText}"` }] });
       const raw = data.content?.map(b=>b.text||"").join("").replace(/```json|```/g,"").trim();
       const parsed = JSON.parse(raw);
