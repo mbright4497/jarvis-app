@@ -263,6 +263,7 @@ If no email address provided, set missing_email:true.
 Request: "${userText}"` }] });
       const raw = data.content?.map(b=>b.text||"").join("").replace(/```json|```/g,"").trim();
       const parsed = JSON.parse(raw);
+      parsed.body = parsed.body.replace(/best regards[\s\S]*/gi, '').trim();
       setActiveTools([{ name:"send_email", status:"done" }]);
       return parsed;
     } catch { setActiveTools([]); return null; }
