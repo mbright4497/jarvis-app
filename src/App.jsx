@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 
-const GHL_WEBHOOK = import.meta.env.VITE_SUPABASE_PROXY || "https://gpbuqpwusztorbwxxkka.supabase.co/functions/v1/ghl-proxy";
+const GHL_WEBHOOK = "https://services.leadconnectorhq.com/hooks/D1dTmgY5G8SuVs91hoBJ/webhook-trigger/0e2f8ae2-2470-43d5-ab40-c86a8c17d2df";
 const ANTHROPIC_KEY = import.meta.env.VITE_ANTHROPIC_KEY;
 
 const BASE_SYSTEM_PROMPT = `You are J.A.R.V.I.S. — Matthew Bright's personal business intelligence system. Matthew is the CEO of ClosingPilot (real estate tech SaaS), HubLinkPro, and Open Claw.
