@@ -244,6 +244,13 @@ export default function App() {
 Extract fields and return ONLY valid JSON — no other text:
 {"first_name":"","last_name":"","email":"","subject":"","body":"","missing_email":false}
 If no email address provided, set missing_email:true. Write complete professional body, sign as Matthew.
+Format the body as HTML using <p> tags for each paragraph.
+Never write as one long run-on sentence. Structure:
+<p>Hi [first_name],</p>
+<p>[Main message in 2-3 short sentences.]</p>
+<p>Best regards,<br>Matthew Bright<br>CEO, ClosingPilot</p>
+
+The body field must contain valid HTML.
 Request: "${userText}"` }] });
       const raw = data.content?.map(b=>b.text||"").join("").replace(/```json|```/g,"").trim();
       const parsed = JSON.parse(raw);
