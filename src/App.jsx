@@ -652,14 +652,25 @@ Request: "${userText}"` }] });
 
   const speakText = async (text) => {
     const key = import.meta.env.VITE_ELEVEN_KEY;
-    if (!key || !text) return;
+    const stripMarkdown = (t) => t
+      .replace(/\|[\s\S]*?\|/g, "")
+      .replace(/\*\*?(.*?)\*\*?/g, "$1")
+      .replace(/#{1,6}\s/g, "")
+      .replace(/`{1,3}[^`]*`{1,3}/g, "")
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+      .replace(/[-*]\s/g, "")
+      .replace(/\n{2,}/g, ". ")
+      .replace(/\n/g, " ")
+      .trim();
+    const cleanText = stripMarkdown(text);
+    if (!key || !cleanText) return;
     const DANIEL = "onwK4e9ZLuTAKqWW03F9";
     try {
       setIsSpeaking(true);
       const res = await fetch("https://api.elevenlabs.io/v1/text-to-speech/" + DANIEL, {
         method: "POST",
         headers: { "xi-api-key": key, "Content-Type": "application/json", "Accept": "audio/mpeg" },
-        body: JSON.stringify({ text, model_id: "eleven_turbo_v2", voice_settings: { stability: 0.5, similarity_boost: 0.75 } }),
+        body: JSON.stringify({ text: cleanText, model_id: "eleven_turbo_v2", voice_settings: { stability: 0.5, similarity_boost: 0.75 } }),
       });
       if (!res.ok) { setIsSpeaking(false); return; }
       const buffer = await res.arrayBuffer();
