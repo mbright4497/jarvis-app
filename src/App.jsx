@@ -652,6 +652,9 @@ Request: "${userText}"` }] });
 
   const speakText = async (text) => {
     const key = import.meta.env.VITE_ELEVEN_KEY;
+    if (!key || !text) return;
+    const DANIEL = "onwK4e9ZLuTAKqWW03F9";
+
     const stripMarkdown = (t) => t
       .replace(/\|[\s\S]*?\|/g, "")
       .replace(/\*\*?(.*?)\*\*?/g, "$1")
@@ -662,26 +665,44 @@ Request: "${userText}"` }] });
       .replace(/\n{2,}/g, ". ")
       .replace(/\n/g, " ")
       .trim();
+
     const cleanText = stripMarkdown(text);
-    if (!key || !cleanText) return;
-    const DANIEL = "onwK4e9ZLuTAKqWW03F9";
+    if (!cleanText) return;
+
+    const sentences = cleanText.match(/[^.!?]+[.!?]+/g) || [cleanText];
+
+    setIsSpeaking(true);
     try {
-      setIsSpeaking(true);
-      const res = await fetch("https://api.elevenlabs.io/v1/text-to-speech/" + DANIEL, {
-        method: "POST",
-        headers: { "xi-api-key": key, "Content-Type": "application/json", "Accept": "audio/mpeg" },
-        body: JSON.stringify({ text: cleanText, model_id: "eleven_turbo_v2", voice_settings: { stability: 0.5, similarity_boost: 0.75 } }),
-      });
-      if (!res.ok) { setIsSpeaking(false); return; }
-      const buffer = await res.arrayBuffer();
-      const ctx = new (window.AudioContext || window.webkitAudioContext)();
-      const decoded = await ctx.decodeAudioData(buffer);
-      const source = ctx.createBufferSource();
-      source.buffer = decoded;
-      source.connect(ctx.destination);
-      source.onended = () => { setIsSpeaking(false); ctx.close(); };
-      source.start(0);
-    } catch { setIsSpeaking(false); }
+      for (const sentence of sentences) {
+        const trimmed = sentence.trim();
+        if (!trimmed) continue;
+        const res = await fetch("https://api.elevenlabs.io/v1/text-to-speech/" + DANIEL, {
+          method: "POST",
+          headers: { "xi-api-key": key, "Content-Type": "application/json", "Accept": "audio/mpeg" },
+          body: JSON.stringify({
+            text: trimmed,
+            model_id: "eleven_turbo_v2",
+            voice_settings: { stability: 0.65, similarity_boost: 0.85 },
+          }),
+        });
+        if (!res.ok) continue;
+        const buffer = await res.arrayBuffer();
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const decoded = await ctx.decodeAudioData(buffer);
+        const source = ctx.createBufferSource();
+        source.buffer = decoded;
+        source.connect(ctx.destination);
+        await new Promise((resolve) => {
+          source.onended = () => {
+            ctx.close();
+            resolve();
+          };
+          source.start(0);
+        });
+        await new Promise((r) => setTimeout(r, 180));
+      }
+    } catch {}
+    setIsSpeaking(false);
   };
 
   // ── Voice input — Web Speech API ──────────────────────────────────────────
