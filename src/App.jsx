@@ -747,6 +747,9 @@ Request: "${userText}"` }] });
         @keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
         @keyframes slideIn{from{opacity:0;transform:translateX(20px)}to{opacity:1;transform:translateX(0)}}
         @keyframes memSave{0%{opacity:0}20%{opacity:1}80%{opacity:1}100%{opacity:0}}
+        @keyframes micPulse{0%{box-shadow:0 0 0 0 rgba(200,168,75,0.6)}70%{box-shadow:0 0 0 10px rgba(200,168,75,0)}100%{box-shadow:0 0 0 0 rgba(200,168,75,0)}}
+        @keyframes speakPulse{0%,100%{opacity:0.4;transform:scaleY(0.6)}50%{opacity:1;transform:scaleY(1)}}
+        @keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
         ::-webkit-scrollbar{width:3px}::-webkit-scrollbar-thumb{background:#2a2a2e;border-radius:4px}
         textarea{resize:none;font-family:inherit}textarea:focus{outline:none}
         .qbtn:hover{background:rgba(200,168,75,0.12)!important;border-color:rgba(200,168,75,0.4)!important;color:#C8A84B!important}
@@ -842,7 +845,9 @@ Request: "${userText}"` }] });
                 <div style={{display:"flex",justifyContent:m.role==="user"?"flex-end":"flex-start"}}>
                   {m.role==="assistant"&&<div style={{width:22,height:22,borderRadius:"50%",background:"rgba(200,168,75,0.15)",border:"0.5px solid rgba(200,168,75,0.3)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,color:"#C8A84B",fontWeight:700,flexShrink:0,marginRight:7,marginTop:2}}>J</div>}
                   <div style={{maxWidth:"80%",padding:"8px 12px",borderRadius:m.role==="user"?"12px 12px 2px 12px":"12px 12px 12px 2px",background:m.role==="user"?"rgba(200,168,75,0.1)":"rgba(255,255,255,0.04)",border:m.role==="user"?"0.5px solid rgba(200,168,75,0.2)":"0.5px solid rgba(255,255,255,0.07)",fontSize:13,lineHeight:1.65,color:m.role==="user"?"#E8DFC8":"#D4CEBE"}}>
-                    {typeof m.content==="string"?fmt(m.content):m.content}
+                    {typeof m.content==="string"
+                      ? <>{fmt(m.content)}{loading && i===messages.length-1 && m.role==="assistant" && <span style={{display:"inline-block",width:2,height:14,background:"#C8A84B",marginLeft:2,verticalAlign:"middle",animation:"blink 1s step-end infinite"}}/>}</>
+                      : m.content}
                   </div>
                 </div>
                 {m.emailDrafts?.map((e,j)=><div key={j} style={{marginLeft:30}}><EmailCard {...e}/></div>)}
@@ -850,6 +855,16 @@ Request: "${userText}"` }] });
               </div>
             ))}
             {activeTools.length>0&&<div style={{display:"flex",flexDirection:"column",gap:4,marginLeft:30}}>{activeTools.map((t,i)=><ToolBadge key={i} {...t}/>)}</div>}
+            {isSpeaking&&(
+              <div style={{display:"flex",alignItems:"center",gap:7,marginLeft:0}}>
+                <div style={{width:22,height:22,borderRadius:"50%",background:"rgba(200,168,75,0.15)",border:"0.5px solid rgba(200,168,75,0.3)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,color:"#C8A84B",fontWeight:700,flexShrink:0}}>J</div>
+                <div style={{display:"flex",alignItems:"center",gap:3,padding:"8px 12px",background:"rgba(255,255,255,0.04)",border:"0.5px solid rgba(255,255,255,0.08)",borderRadius:12}}>
+                  {[0,1,2,3,4].map(i=>(
+                    <div key={i} style={{width:3,height:16,background:"#C8A84B",borderRadius:2,animation:"speakPulse 0.8s ease-in-out infinite",animationDelay:`${i*0.12}s`}}/>
+                  ))}
+                </div>
+              </div>
+            )}
             {loading&&!activeTools.length&&(
               <div style={{display:"flex",alignItems:"flex-start",gap:7}}>
                 <div style={{width:22,height:22,borderRadius:"50%",background:"rgba(200,168,75,0.15)",border:"0.5px solid rgba(200,168,75,0.3)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,color:"#C8A84B",fontWeight:700,flexShrink:0}}>J</div>
@@ -881,7 +896,7 @@ Request: "${userText}"` }] });
               onInput={e=>{e.target.style.height="auto";e.target.style.height=Math.min(e.target.scrollHeight,90)+"px";}}
             />
             <button onClick={startListening} disabled={isListening || loading}
-              style={{width:30,height:30,borderRadius:"50%",background:isListening?"rgba(200,168,75,0.2)":"rgba(255,255,255,0.05)",border:isListening?"0.5px solid rgba(200,168,75,0.6)":"0.5px solid rgba(255,255,255,0.1)",cursor:isListening?"default":"pointer",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,transition:"all 0.15s"}}>
+              style={{width:30,height:30,borderRadius:"50%",background:isListening?"rgba(200,168,75,0.2)":"rgba(255,255,255,0.05)",border:isListening?"0.5px solid rgba(200,168,75,0.6)":"0.5px solid rgba(255,255,255,0.1)",cursor:isListening?"default":"pointer",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,transition:"all 0.15s",animation:isListening?"micPulse 1.2s ease-out infinite":""}}>
               {isListening
                 ? <div style={{width:8,height:8,borderRadius:"50%",background:"#C8A84B",animation:"pulse 1.2s ease-in-out infinite"}}/>
                 : <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><rect x="9" y="2" width="6" height="12" rx="3" stroke="#888" strokeWidth="2"/><path d="M5 10a7 7 0 0014 0" stroke="#888" strokeWidth="2" strokeLinecap="round"/><line x1="12" y1="19" x2="12" y2="22" stroke="#888" strokeWidth="2" strokeLinecap="round"/></svg>
