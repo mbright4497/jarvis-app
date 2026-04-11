@@ -438,6 +438,7 @@ export default function App() {
   const [activeTools,  setActiveTools]  = useState([]);
   const [activeTab,    setActiveTab]    = useState("chat"); // "chat" | "ideas"
   const [activeAgent,  setActiveAgent]  = useState(null);
+  const [isListening,  setIsListening]  = useState(false);
   const bottomRef = useRef(null);
 
   useEffect(() => {
@@ -640,6 +641,28 @@ Request: "${userText}"` }] });
 
   const handleKey = (e) => { if (e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); sendMessage(); }};
 
+  // ── Voice input — Web Speech API ──────────────────────────────────────────
+  // No API key needed. Browser handles transcription locally.
+  // onresult fires when speech is detected → sets input → user can edit or send.
+  // onend always fires (even on error) → resets listening state.
+  const startListening = () => {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) { alert("Voice input not supported in this browser. Use Chrome."); return; }
+    if (isListening) return;
+    const recognition = new SR();
+    recognition.lang = "en-US";
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+    recognition.onstart  = () => setIsListening(true);
+    recognition.onend    = () => setIsListening(false);
+    recognition.onerror  = () => setIsListening(false);
+    recognition.onresult = (e) => {
+      const transcript = e.results[0][0].transcript;
+      setInput(transcript);
+    };
+    recognition.start();
+  };
+
   const fmt = (text) => text.split("\n").map((line,i)=>{
     if (line.startsWith("**")&&line.endsWith("**")) return <p key={i} style={{margin:"8px 0 4px",fontWeight:600,color:"#C8A84B",fontSize:12,letterSpacing:"0.04em",textTransform:"uppercase"}}>{line.replace(/\*\*/g,"")}</p>;
     if (line.match(/^\d+\.\s/)) return <p key={i} style={{margin:"3px 0",paddingLeft:4}}>{line}</p>;
@@ -791,6 +814,13 @@ Request: "${userText}"` }] });
               style={{flex:1,background:"transparent",border:"none",color:"#E8E3D9",fontSize:13,lineHeight:1.6,maxHeight:90,overflowY:"auto",caretColor:"#C8A84B"}}
               onInput={e=>{e.target.style.height="auto";e.target.style.height=Math.min(e.target.scrollHeight,90)+"px";}}
             />
+            <button onClick={startListening} disabled={isListening || loading}
+              style={{width:30,height:30,borderRadius:"50%",background:isListening?"rgba(200,168,75,0.2)":"rgba(255,255,255,0.05)",border:isListening?"0.5px solid rgba(200,168,75,0.6)":"0.5px solid rgba(255,255,255,0.1)",cursor:isListening?"default":"pointer",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,transition:"all 0.15s"}}>
+              {isListening
+                ? <div style={{width:8,height:8,borderRadius:"50%",background:"#C8A84B",animation:"pulse 1.2s ease-in-out infinite"}}/>
+                : <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><rect x="9" y="2" width="6" height="12" rx="3" stroke="#888" strokeWidth="2"/><path d="M5 10a7 7 0 0014 0" stroke="#888" strokeWidth="2" strokeLinecap="round"/><line x1="12" y1="19" x2="12" y2="22" stroke="#888" strokeWidth="2" strokeLinecap="round"/></svg>
+              }
+            </button>
             <button className="send-btn" onClick={()=>sendMessage()} disabled={loading||!input.trim()}
               style={{width:30,height:30,borderRadius:"50%",background:input.trim()&&!loading?"#C8A84B":"rgba(255,255,255,0.05)",border:"none",cursor:input.trim()&&!loading?"pointer":"default",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,transition:"all 0.15s"}}>
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none">
