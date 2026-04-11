@@ -427,7 +427,7 @@ Idea: "${name}" — ${description} (Category: ${category})`;
   return null;
 };
 
-const FireworksDisplay = () => {
+const FireworksDisplay = ({ analyserRef }) => {
   const canvasRef = useRef(null);
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -438,35 +438,51 @@ const FireworksDisplay = () => {
     const particles = [];
     const colors = ["#C8A84B","#E8D48B","#F5F5F5","#C0C0C0","#A8A8A8","#FFD700","#E8E8E8","#D4AF37"];
 
-    const launch = () => {
-      const x = canvas.width * (0.3 + Math.random() * 0.4);
+    const launch = (intensity = 1) => {
+      const x = canvas.width * (0.25 + Math.random() * 0.5);
       const y = canvas.height * (0.2 + Math.random() * 0.4);
-      const count = 80 + Math.floor(Math.random() * 60);
+      const count = Math.floor((40 + intensity * 80) * (0.5 + Math.random() * 0.5));
       for (let i = 0; i < count; i++) {
-        const angle = (Math.PI * 2 * i) / count + (Math.random() - 0.5) * 0.3;
-        const speed = 2 + Math.random() * 5;
+        const angle = (Math.PI * 2 * i) / count + (Math.random() - 0.5) * 0.4;
+        const speed = (1.5 + intensity * 5) * (0.5 + Math.random() * 0.8);
         particles.push({
           x, y,
           vx: Math.cos(angle) * speed,
           vy: Math.sin(angle) * speed,
           alpha: 1,
-          decay: 0.012 + Math.random() * 0.008,
-          size: 1.5 + Math.random() * 2,
+          decay: 0.014 + Math.random() * 0.008,
+          size: 1.2 + intensity * 1.5 * Math.random(),
           color: colors[Math.floor(Math.random() * colors.length)],
           trail: [],
         });
       }
     };
 
+    const dataArray = new Uint8Array(64);
+    let lastBurst = 0;
+    let lastAmplitude = 0;
     let frame;
-    let lastLaunch = 0;
+
     const animate = (ts) => {
       ctx.fillStyle = "rgba(8,8,12,0.18)";
       ctx.fillRect(0, 0, canvas.width, canvas.height);
-      if (ts - lastLaunch > 700 + Math.random() * 600) {
-        launch();
-        lastLaunch = ts;
+
+      // Read amplitude from analyser
+      let amplitude = 0;
+      if (analyserRef.current) {
+        analyserRef.current.getByteFrequencyData(dataArray);
+        amplitude = dataArray.reduce((a, b) => a + b, 0) / dataArray.length / 255;
       }
+
+      // Fire burst when amplitude spikes above threshold
+      const spike = amplitude - lastAmplitude;
+      if (amplitude > 0.08 && spike > 0.04 && ts - lastBurst > 300) {
+        launch(amplitude);
+        lastBurst = ts;
+      }
+      lastAmplitude = amplitude;
+
+      // Draw particles
       for (let i = particles.length - 1; i >= 0; i--) {
         const p = particles[i];
         p.trail.push({ x: p.x, y: p.y, alpha: p.alpha });
@@ -483,14 +499,14 @@ const FireworksDisplay = () => {
         ctx.fill();
         p.x += p.vx;
         p.y += p.vy;
-        p.vy += 0.06;
+        p.vy += 0.055;
         p.vx *= 0.99;
         p.alpha -= p.decay;
         if (p.alpha <= 0) particles.splice(i, 1);
       }
       frame = requestAnimationFrame(animate);
     };
-    launch();
+
     frame = requestAnimationFrame(animate);
     return () => cancelAnimationFrame(frame);
   }, []);
@@ -517,6 +533,7 @@ export default function App() {
   const [isListening,  setIsListening]  = useState(false);
   const [isSpeaking,   setIsSpeaking]   = useState(false);
   const bottomRef = useRef(null);
+  const analyserRef = useRef(null);
 
   useEffect(() => {
     const saved = storage.get("jarvis_memories") || [];
@@ -765,12 +782,17 @@ Request: "${userText}"` }] });
         if (!res.ok) continue;
         const buffer = await res.arrayBuffer();
         const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 256;
+        analyserRef.current = analyser;
         const decoded = await ctx.decodeAudioData(buffer);
         const source = ctx.createBufferSource();
         source.buffer = decoded;
-        source.connect(ctx.destination);
+        source.connect(analyser);
+        analyser.connect(ctx.destination);
         await new Promise((resolve) => {
           source.onended = () => {
+            analyserRef.current = null;
             ctx.close();
             resolve();
           };
@@ -991,7 +1013,7 @@ Request: "${userText}"` }] });
       )}
       {isSpeaking && (
         <div style={{position:"fixed",top:0,left:0,width:"100%",height:"100%",zIndex:49,background:"rgba(8,8,12,0.85)",transition:"opacity 0.5s"}}>
-          <FireworksDisplay/>
+          <FireworksDisplay analyserRef={analyserRef}/>
           <div style={{position:"absolute",bottom:40,left:0,right:0,textAlign:"center",fontSize:11,color:"rgba(200,168,75,0.5)",fontFamily:"'DM Mono',monospace",letterSpacing:"0.15em"}}>JARVIS SPEAKING</div>
         </div>
       )}
