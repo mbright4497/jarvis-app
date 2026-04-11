@@ -715,27 +715,27 @@ Request: "${userText}"` }] });
       {/* ── Agent Switcher ── */}
       {activeTab === "chat" && (
         <div style={{padding:"5px 12px",borderBottom:"0.5px solid rgba(255,255,255,0.04)",display:"flex",gap:5,alignItems:"center",flexShrink:0,overflowX:"auto"}}>
-          <span style={{fontSize:9,color:"#2a2a2a",fontFamily:"'DM Mono',monospace",flexShrink:0,marginRight:2,letterSpacing:"0.06em"}}>MODE</span>
+          <span style={{fontSize:9,color:"#555",fontFamily:"'DM Mono',monospace",flexShrink:0,marginRight:4,letterSpacing:"0.06em"}}>MODE</span>
           {AGENTS.map(agent => {
             const on = activeAgent === agent.id;
             return (
               <button key={agent.id}
                 onClick={() => setActiveAgent(on ? null : agent.id)}
                 style={{
-                  padding:"3px 10px",
-                  background: on ? "rgba(200,168,75,0.12)" : "transparent",
-                  border: on ? "0.5px solid rgba(200,168,75,0.55)" : "0.5px solid rgba(255,255,255,0.06)",
-                  borderRadius:20, color: on ? "#C8A84B" : "#444",
-                  fontSize:10, cursor:"pointer", whiteSpace:"nowrap",
+                  padding:"4px 12px",
+                  background: on ? "rgba(200,168,75,0.18)" : "rgba(255,255,255,0.06)",
+                  border: on ? "0.5px solid rgba(200,168,75,0.7)" : "0.5px solid rgba(255,255,255,0.15)",
+                  borderRadius:20, color: on ? "#C8A84B" : "#aaa",
+                  fontSize:11, cursor:"pointer", whiteSpace:"nowrap",
                   fontFamily:"'DM Mono',monospace", letterSpacing:"0.05em",
-                  transition:"all 0.15s", display:"flex", alignItems:"center", gap:4,
+                  transition:"all 0.15s", display:"flex", alignItems:"center", gap:5,
                 }}>
                 {agent.emoji} {agent.label}
               </button>
             );
           })}
           {activeAgent && (
-            <span style={{fontSize:9,color:"#C8A84B",fontFamily:"'DM Mono',monospace",marginLeft:2,letterSpacing:"0.06em",flexShrink:0}}>
+            <span style={{fontSize:9,color:"#C8A84B",fontFamily:"'DM Mono',monospace",marginLeft:4,letterSpacing:"0.06em",flexShrink:0,fontWeight:600}}>
               {activeAgent} ACTIVE
             </span>
           )}
