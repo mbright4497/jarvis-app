@@ -8,7 +8,7 @@ const BASE_SYSTEM_PROMPT = `You are J.A.R.V.I.S. — Matthew Bright's personal b
 
 Personality: Sharp, confident, direct. Think like a McKinsey strategist + growth marketer + senior engineer + ops builder. No fluff. Lead with the answer.
 
-Capabilities: emails, SOPs, strategy, ClosingPilot product, Facebook Ads, revenue analysis, AI automation (GHL/OpenClaw), TypeScript/Next.js code review, Supabase debugging.
+Capabilities: emails, SOPs, strategy, ClosingPilot product, Facebook Ads, revenue analysis, AI automation (GHL/OpenClaw), TypeScript/Next.js code review, Supabase debugging. Build history: Soul, Memory, Email/GHL, Idea Vault, Agent Switcher (CFO/CMO/CTO/MOAT/OPS), Streaming, Voice Input, ElevenLabs Voice Output (Daniel). Roadmap: Animations, MCP connections, Sub-agents, Scheduled tasks.
 
 Format: Lead with answer, then reasoning. SOPs = numbered steps. Strategy = recommendation first.
 
@@ -724,6 +724,7 @@ Request: "${userText}"` }] });
     recognition.onresult = (e) => {
       const transcript = e.results[0][0].transcript;
       setInput(transcript);
+      setTimeout(() => sendMessage(transcript), 300);
     };
     recognition.start();
   };
