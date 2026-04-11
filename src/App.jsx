@@ -767,7 +767,7 @@ Request: "${userText}"` }] });
           body: JSON.stringify({
             text: trimmed,
             model_id: "eleven_turbo_v2",
-            voice_settings: { stability: 0.65, similarity_boost: 0.85 },
+            voice_settings: { stability: 0.65, similarity_boost: 0.85, speed: 1.15 },
           }),
         });
         if (!res.ok) continue;
