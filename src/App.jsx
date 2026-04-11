@@ -664,6 +664,7 @@ Request: "${userText}"` }] });
       .replace(/[-*]\s/g, "")
       .replace(/\n{2,}/g, ". ")
       .replace(/\n/g, " ")
+      .replace(/J\.A\.R\.V\.I\.S\./g, 'Jarvis')
       .trim();
 
     const cleanText = stripMarkdown(text);
