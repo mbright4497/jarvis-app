@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react";
 
 const GHL_WEBHOOK = "https://services.leadconnectorhq.com/hooks/D1dTmgY5G8SuVs91hoBJ/webhook-trigger/0e2f8ae2-2470-43d5-ab40-c86a8c17d2df";
 const ANTHROPIC_KEY = import.meta.env.VITE_ANTHROPIC_KEY;
+const MODEL = "claude-sonnet-4-6";
 
 const BASE_SYSTEM_PROMPT = `You are J.A.R.V.I.S. — Matthew Bright's personal business intelligence system. Matthew is the CEO of ClosingPilot (real estate tech SaaS), HubLinkPro, and Open Claw.
 
@@ -69,6 +70,23 @@ const QUICK_ACTIONS = [
   { id: "closingpilot", label: "ClosingPilot", icon: "🏠", prompt: "Let's work on ClosingPilot. Ask me what I need — product, feature, code, or workflow." },
   { id: "revenue",      label: "Revenue",      icon: "💰", prompt: "Let's analyze revenue or financials. Ask me what to focus on." },
   { id: "sop",          label: "Build SOP",    icon: "📋", prompt: "Help me build a Standard Operating Procedure. Ask me what process we're documenting." },
+];
+
+// ── Agent Switcher ─────────────────────────────────────────────────────────────
+const AGENT_PROMPTS = {
+  CFO:  `ACTIVE MODE: CFO — Focus exclusively on revenue, MRR/ARR, runway, pricing strategy, Stripe data, and financial decisions across ClosingPilot, HubLinkPro, MOAT, Open Claw. Surface risks. Protect runway. Push toward $1M ARR by Q1 2027. Every answer ends with a financial implication.`,
+  CMO:  `ACTIVE MODE: CMO — Focus on Facebook ads, HubLinkPro campaigns, positioning, hooks, copy, funnels, and GTM strategy. Think in conversion, not impressions. Every answer moves Matthew closer to his next paying customer.`,
+  CTO:  `ACTIVE MODE: CTO — Focus on JARVIS upgrades, Closing Jet builds, MOAT development, Claude AI implementation, and stack decisions. Write clean production code. Explain the WHY behind every technical decision. Only build what ships.`,
+  MOAT: `ACTIVE MODE: MOAT — Focus on identifying dying apps with trapped paying users, scoring replacement opportunities, global market sizing, and AI-native build planning. Target: 3 MOAT apps per quarter, multi-language, 4B addressable market.`,
+  OPS:  `ACTIVE MODE: OPS — Focus on SOPs, daily briefings, client onboarding, task prioritization, and running four companies solo. Help Matthew operate like a team of 10. Systemize everything. Cut what doesn't matter.`,
+};
+
+const AGENTS = [
+  { id: "CFO",  emoji: "💰", label: "CFO"  },
+  { id: "CMO",  emoji: "📣", label: "CMO"  },
+  { id: "CTO",  emoji: "🔧", label: "CTO"  },
+  { id: "MOAT", emoji: "💀", label: "MOAT" },
+  { id: "OPS",  emoji: "⚙️", label: "OPS"  },
 ];
 
 const IDEA_CATEGORIES = ["App / SaaS", "Automation", "Agency", "Real Estate", "AI Tool", "Other"];
@@ -234,7 +252,7 @@ Score this idea. Return ONLY valid JSON, no markdown:
 
 Idea: "${name}" — ${description} (Category: ${category})`;
 
-    const data = await callClaude({ model:"claude-sonnet-4-5", max_tokens:500, messages:[{ role:"user", content:prompt }] });
+    const data = await callClaude({ model:MODEL, max_tokens:500, messages:[{ role:"user", content:prompt }] });
     const raw = data.content?.map(b=>b.text||"").join("").replace(/```json|```/g,"").trim();
     return JSON.parse(raw);
   };
@@ -419,6 +437,7 @@ export default function App() {
   const [savingMemory, setSavingMemory] = useState(false);
   const [activeTools,  setActiveTools]  = useState([]);
   const [activeTab,    setActiveTab]    = useState("chat"); // "chat" | "ideas"
+  const [activeAgent,  setActiveAgent]  = useState(null);
   const bottomRef = useRef(null);
 
   useEffect(() => {
@@ -436,14 +455,18 @@ export default function App() {
   const deleteMemory = (key) => saveMemories(memories.filter(m => m.key !== key));
 
   const buildSystemPrompt = () => {
-    if (!memories.length) return BASE_SYSTEM_PROMPT;
+    const agentBlock = activeAgent && AGENT_PROMPTS[activeAgent]
+      ? `\n\n${AGENT_PROMPTS[activeAgent]}`
+      : "";
+    const base = `${BASE_SYSTEM_PROMPT}${agentBlock}`;
+    if (!memories.length) return base;
     const block = memories.map(m=>`[${m.category.toUpperCase()}] ${m.key}: ${m.value}`).join("\n");
-    return `${BASE_SYSTEM_PROMPT}\n\n--- MATTHEW'S MEMORY ---\n${block}\n--- END MEMORY ---`;
+    return `${base}\n\n--- MATTHEW'S MEMORY ---\n${block}\n--- END MEMORY ---`;
   };
 
   const extractFacts = async (msg) => {
     try {
-      const data = await callClaude({ model:"claude-sonnet-4-5", max_tokens:400,
+      const data = await callClaude({ model:MODEL, max_tokens:400,
         messages:[{ role:"user", content:`${EXTRACT_PROMPT}\n\nMessage: "${msg}"` }] });
       const parsed = JSON.parse(data.content?.map(b=>b.text||"").join("").replace(/```json|```/g,"").trim());
       if (parsed.hasNewFacts && parsed.facts?.length > 0) {
@@ -460,7 +483,7 @@ export default function App() {
     setActiveTools([{ name:"send_email", status:"running" }]);
     try {
       const ctx = memories.length ? `\nContext: ${memories.map(m=>`${m.key}: ${m.value}`).join(", ")}` : "";
-      const data = await callClaude({ model:"claude-sonnet-4-5", max_tokens:600,
+      const data = await callClaude({ model:MODEL, max_tokens:600,
         messages:[{ role:"user", content:
           `You are an email composer for Matthew Bright, CEO of ClosingPilot.${ctx}
 CRITICAL — GHL adds the sender signature automatically. Do NOT put any sign-off, closing, or signature in greeting or body. No "Best regards", no "Sincerely", no sender name, no title, no company name.
@@ -501,30 +524,117 @@ Request: "${userText}"` }] });
 
     try {
       const apiMessages = newMessages.map(m=>({ role:m.role, content:m.content }));
-      const data = await callClaude({ model:"claude-sonnet-4-5", max_tokens:1000,
-        system: buildSystemPrompt(), tools:TOOLS, tool_choice:{type:"auto"}, messages:apiMessages });
-
-      if (data.error) { setMessages(prev=>[...prev,{role:"assistant",content:`Error: ${data.error.message}`}]); setLoading(false); return; }
-
-      const toolBlocks = data.content?.filter(b=>b.type==="tool_use")||[];
-      const textReply  = data.content?.filter(b=>b.type==="text").map(b=>b.text).join("")||"";
-
-      if (!toolBlocks.length) {
-        setMessages(prev=>[...prev,{role:"assistant",content:textReply||"No response."}]);
-      } else {
-        const emailDrafts=[]; const ghlActions=[];
-        const toolResults = await Promise.all(toolBlocks.map(async block => {
-          if (block.name==="send_email")  emailDrafts.push(block.input);
-          if (block.name==="trigger_ghl") ghlActions.push(block.input);
-          return { type:"tool_result", tool_use_id:block.id, content:JSON.stringify({success:true}) };
-        }));
-        const data2 = await callClaude({ model:"claude-sonnet-4-5", max_tokens:1000,
-          system:buildSystemPrompt(), tools:TOOLS, tool_choice:{type:"auto"},
-          messages:[...apiMessages,{role:"assistant",content:data.content},{role:"user",content:toolResults}] });
-        const final = data2.content?.filter(b=>b.type==="text").map(b=>b.text).join("")||"Done.";
-        setMessages(prev=>[...prev,{role:"assistant",content:final,emailDrafts,ghlActions}]);
+      setMessages(prev => [...prev, { role:"assistant", content:"" }]);
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": ANTHROPIC_KEY,
+          "anthropic-version": "2023-06-01",
+          "anthropic-dangerous-direct-browser-access": "true",
+        },
+        body: JSON.stringify({
+          model: MODEL, max_tokens: 1000, stream: true,
+          system: buildSystemPrompt(),
+          tools: TOOLS, tool_choice: { type:"auto" },
+          messages: apiMessages,
+        }),
+      });
+      if (!res.ok) throw new Error(`API ${res.status}`);
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      let blocks = {};
+      let stopReason = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream:true });
+        const lines = buf.split("\n");
+        buf = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          try {
+            const ev = JSON.parse(line.slice(6).trim());
+            if (ev.type === "content_block_start") {
+              const cb = ev.content_block;
+              blocks[ev.index] = cb.type === "tool_use"
+                ? { type:"tool_use", id:cb.id, name:cb.name, inputStr:"" }
+                : { type:"text", text:"" };
+              if (cb.type === "tool_use") setActiveTools(prev => [...prev, { name:cb.name, status:"running" }]);
+            }
+            if (ev.type === "content_block_delta") {
+              const b = blocks[ev.index];
+              if (!b) continue;
+              if (ev.delta.type === "text_delta") {
+                b.text += ev.delta.text;
+                const snap = b.text;
+                setMessages(prev => { const u=[...prev]; u[u.length-1]={ role:"assistant", content:snap }; return u; });
+              }
+              if (ev.delta.type === "input_json_delta") b.inputStr += ev.delta.partial_json;
+            }
+            if (ev.type === "message_delta") stopReason = ev.delta.stop_reason;
+          } catch {}
+        }
       }
-    } catch(e) { setMessages(prev=>[...prev,{role:"assistant",content:`Error: ${e.message}`}]); }
+      if (stopReason === "tool_use") {
+        const toolBlocks = Object.values(blocks).filter(b => b?.type === "tool_use");
+        const emailDrafts = []; const ghlActions = [];
+        const parsedTools = toolBlocks.map(b => {
+          let input = {};
+          try { input = JSON.parse(b.inputStr || "{}"); } catch {}
+          if (b.name === "send_email")  emailDrafts.push(input);
+          if (b.name === "trigger_ghl") ghlActions.push(input);
+          return { ...b, input };
+        });
+        const toolResults = parsedTools.map(b => ({
+          type:"tool_result", tool_use_id:b.id, content:JSON.stringify({ success:true })
+        }));
+        const assistantContent = Object.values(blocks).filter(Boolean).map(b =>
+          b.type === "text"
+            ? { type:"text", text: b.text || "." }
+            : { type:"tool_use", id:b.id, name:b.name, input: parsedTools.find(p=>p.id===b.id)?.input || {} }
+        );
+        setMessages(prev => { const u=[...prev]; u[u.length-1]={ role:"assistant", content:"" }; return u; });
+        const res2 = await fetch("https://api.anthropic.com/v1/messages", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-api-key": ANTHROPIC_KEY,
+            "anthropic-version": "2023-06-01",
+            "anthropic-dangerous-direct-browser-access": "true",
+          },
+          body: JSON.stringify({
+            model: MODEL, max_tokens: 1000, stream: true,
+            system: buildSystemPrompt(),
+            tools: TOOLS, tool_choice: { type:"auto" },
+            messages: [...apiMessages, { role:"assistant", content:assistantContent }, { role:"user", content:toolResults }],
+          }),
+        });
+        if (!res2.ok) throw new Error(`API ${res2.status}`);
+        const reader2 = res2.body.getReader();
+        let buf2 = ""; let finalText = "";
+        while (true) {
+          const { done, value } = await reader2.read();
+          if (done) break;
+          buf2 += dec.decode(value, { stream:true });
+          const lines = buf2.split("\n");
+          buf2 = lines.pop() ?? "";
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            try {
+              const ev = JSON.parse(line.slice(6).trim());
+              if (ev.type === "content_block_delta" && ev.delta?.type === "text_delta") {
+                finalText += ev.delta.text;
+                setMessages(prev => { const u=[...prev]; u[u.length-1]={ role:"assistant", content:finalText, emailDrafts, ghlActions }; return u; });
+              }
+            } catch {}
+          }
+        }
+      }
+    } catch(e) {
+      setMessages(prev => { const u=[...prev]; u[u.length-1]={ role:"assistant", content:`Error: ${e.message}` }; return u; });
+    }
     setActiveTools([]); setLoading(false);
   };
 
@@ -599,6 +709,36 @@ Request: "${userText}"` }] });
               {a.icon} {a.label}
             </button>
           ))}
+        </div>
+      )}
+
+      {/* ── Agent Switcher ── */}
+      {activeTab === "chat" && (
+        <div style={{padding:"5px 12px",borderBottom:"0.5px solid rgba(255,255,255,0.04)",display:"flex",gap:5,alignItems:"center",flexShrink:0,overflowX:"auto"}}>
+          <span style={{fontSize:9,color:"#2a2a2a",fontFamily:"'DM Mono',monospace",flexShrink:0,marginRight:2,letterSpacing:"0.06em"}}>MODE</span>
+          {AGENTS.map(agent => {
+            const on = activeAgent === agent.id;
+            return (
+              <button key={agent.id}
+                onClick={() => setActiveAgent(on ? null : agent.id)}
+                style={{
+                  padding:"3px 10px",
+                  background: on ? "rgba(200,168,75,0.12)" : "transparent",
+                  border: on ? "0.5px solid rgba(200,168,75,0.55)" : "0.5px solid rgba(255,255,255,0.06)",
+                  borderRadius:20, color: on ? "#C8A84B" : "#444",
+                  fontSize:10, cursor:"pointer", whiteSpace:"nowrap",
+                  fontFamily:"'DM Mono',monospace", letterSpacing:"0.05em",
+                  transition:"all 0.15s", display:"flex", alignItems:"center", gap:4,
+                }}>
+                {agent.emoji} {agent.label}
+              </button>
+            );
+          })}
+          {activeAgent && (
+            <span style={{fontSize:9,color:"#C8A84B",fontFamily:"'DM Mono',monospace",marginLeft:2,letterSpacing:"0.06em",flexShrink:0}}>
+              {activeAgent} ACTIVE
+            </span>
+          )}
         </div>
       )}
 
