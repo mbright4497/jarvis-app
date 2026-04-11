@@ -4,6 +4,29 @@ const GHL_WEBHOOK = "https://services.leadconnectorhq.com/hooks/D1dTmgY5G8SuVs91
 const ANTHROPIC_KEY = import.meta.env.VITE_ANTHROPIC_KEY;
 const MODEL = "claude-sonnet-4-6";
 
+const SUPABASE_URL = "https://gpbuqpwusztorbwxxkka.supabase.co";
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
+const supabase = {
+  from: (table) => ({
+    select: (cols = "*") => ({
+      order: (col, opts) => fetch(`${SUPABASE_URL}/rest/v1/${table}?select=${cols}&order=${col}.${opts?.ascending ? "asc" : "desc"}`, {
+        headers: { "apikey": SUPABASE_ANON_KEY, "Authorization": `Bearer ${SUPABASE_ANON_KEY}` }
+      }).then(r => r.json()).then(data => ({ data, error: null })).catch(e => ({ data: null, error: e })),
+    }),
+    insert: (rows) => fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
+      method: "POST",
+      headers: { "apikey": SUPABASE_ANON_KEY, "Authorization": `Bearer ${SUPABASE_ANON_KEY}`, "Content-Type": "application/json", "Prefer": "return=representation" },
+      body: JSON.stringify(rows)
+    }).then(r => r.json()).then(data => ({ data, error: null })).catch(e => ({ data: null, error: e })),
+    delete: () => ({
+      eq: (col, val) => fetch(`${SUPABASE_URL}/rest/v1/${table}?${col}=eq.${val}`, {
+        method: "DELETE",
+        headers: { "apikey": SUPABASE_ANON_KEY, "Authorization": `Bearer ${SUPABASE_ANON_KEY}` }
+      }).then(() => ({ error: null })).catch(e => ({ error: e }))
+    }),
+  }),
+};
+
 const BASE_SYSTEM_PROMPT = `You are J.A.R.V.I.S. — Matthew Bright's personal business intelligence system. Matthew is the CEO of ClosingPilot (real estate tech SaaS), HubLinkPro, and Open Claw.
 
 Personality: Sharp, confident, direct. Think like a McKinsey strategist + growth marketer + senior engineer + ops builder. No fluff. Lead with the answer.
@@ -235,11 +258,11 @@ const IdeaVault = ({ memories }) => {
   const [selected, setSelected] = useState(null);
 
   useEffect(() => {
-    const saved = storage.get("jarvis_ideas") || [];
-    setIdeas(saved);
+    supabase.from("ideas").select("*").order("scores->overall", { ascending: false })
+      .then(({ data }) => { if (data) setIdeas(data); });
   }, []);
 
-  const persist = (updated) => { setIdeas(updated); storage.set("jarvis_ideas", updated); };
+  const persist = (updated) => { setIdeas(updated); };
 
   const scoreIdea = async (name, description, category) => {
     const memCtx = memories.length
@@ -262,16 +285,28 @@ Idea: "${name}" — ${description} (Category: ${category})`;
     setScoring(true);
     try {
       const scores = await scoreIdea(form.name, form.description, form.category);
-      const idea = { id: Date.now(), ...form, scores, createdAt: new Date().toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}) };
-      const updated = [idea, ...ideas].sort((a,b) => b.scores.overall - a.scores.overall);
-      persist(updated);
+      const { data, error } = await supabase.from("ideas").insert([{
+        name: form.name,
+        description: form.description,
+        category: form.category,
+        scores,
+      }]);
+      if (!error && data?.[0]) {
+        const updated = [...ideas, data[0]].sort((a,b) => b.scores.overall - a.scores.overall);
+        persist(updated);
+      }
       setForm(EMPTY_FORM);
       setSubView("list");
-    } catch(e) { alert("Scoring failed — check API key."); }
+    } catch { alert("Scoring failed — check API key."); }
     setScoring(false);
   };
 
-  const deleteIdea = (id) => { persist(ideas.filter(i=>i.id!==id)); setSelected(null); setSubView("list"); };
+  const deleteIdea = async (id) => {
+    await supabase.from("ideas").delete().eq("id", id);
+    persist(ideas.filter(i => i.id !== id));
+    setSelected(null);
+    setSubView("list");
+  };
 
   const top = ideas[0];
 
