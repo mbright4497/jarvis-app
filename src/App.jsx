@@ -427,83 +427,74 @@ Idea: "${name}" — ${description} (Category: ${category})`;
   return null;
 };
 
-const FireworksDisplay = ({ analyserRef }) => {
+const VoiceVisualizer = ({ analyserRef }) => {
   const canvasRef = useRef(null);
   useEffect(() => {
     const canvas = canvasRef.current;
     const ctx = canvas.getContext("2d");
     canvas.width = window.innerWidth;
     canvas.height = window.innerHeight;
-
-    const particles = [];
-    const colors = ["#C8A84B","#E8D48B","#F5F5F5","#C0C0C0","#A8A8A8","#FFD700","#E8E8E8","#D4AF37"];
-
-    const launch = (intensity = 1) => {
-      const x = canvas.width * (0.25 + Math.random() * 0.5);
-      const y = canvas.height * (0.2 + Math.random() * 0.4);
-      const count = Math.floor((40 + intensity * 80) * (0.5 + Math.random() * 0.5));
-      for (let i = 0; i < count; i++) {
-        const angle = (Math.PI * 2 * i) / count + (Math.random() - 0.5) * 0.4;
-        const speed = (1.5 + intensity * 5) * (0.5 + Math.random() * 0.8);
-        particles.push({
-          x, y,
-          vx: Math.cos(angle) * speed,
-          vy: Math.sin(angle) * speed,
-          alpha: 1,
-          decay: 0.014 + Math.random() * 0.008,
-          size: 1.2 + intensity * 1.5 * Math.random(),
-          color: colors[Math.floor(Math.random() * colors.length)],
-          trail: [],
-        });
-      }
-    };
-
-    const dataArray = new Uint8Array(64);
-    let lastBurst = 0;
-    let lastAmplitude = 0;
+    const dataArray = new Uint8Array(128);
     let frame;
 
-    const animate = (ts) => {
-      ctx.fillStyle = "rgba(8,8,12,0.18)";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-      // Read amplitude from analyser
-      let amplitude = 0;
+    const animate = () => {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
       if (analyserRef.current) {
         analyserRef.current.getByteFrequencyData(dataArray);
-        amplitude = dataArray.reduce((a, b) => a + b, 0) / dataArray.length / 255;
+      } else {
+        dataArray.fill(0);
       }
 
-      // Fire burst when amplitude spikes above threshold
-      const spike = amplitude - lastAmplitude;
-      if (amplitude > 0.08 && spike > 0.04 && ts - lastBurst > 300) {
-        launch(amplitude);
-        lastBurst = ts;
-      }
-      lastAmplitude = amplitude;
+      const cx = canvas.width / 2;
+      const cy = canvas.height / 2;
+      const barCount = 64;
+      const barWidth = 3;
+      const gap = 4;
+      const totalWidth = barCount * (barWidth + gap);
+      const startX = cx - totalWidth / 2;
 
-      // Draw particles
-      for (let i = particles.length - 1; i >= 0; i--) {
-        const p = particles[i];
-        p.trail.push({ x: p.x, y: p.y, alpha: p.alpha });
-        if (p.trail.length > 6) p.trail.shift();
-        p.trail.forEach((t, ti) => {
-          ctx.beginPath();
-          ctx.arc(t.x, t.y, p.size * (ti / p.trail.length) * 0.7, 0, Math.PI * 2);
-          ctx.fillStyle = p.color + Math.floor(t.alpha * 80).toString(16).padStart(2,"0");
-          ctx.fill();
-        });
+      for (let i = 0; i < barCount; i++) {
+        const value = dataArray[i] / 255;
+        const barHeight = Math.max(3, value * 140);
+        const x = startX + i * (barWidth + gap);
+
+        // Mirror index for symmetric mouth effect
+        const mirrorI = i < barCount / 2 ? i : barCount - 1 - i;
+        const mirrorValue = dataArray[mirrorI] / 255;
+        const mirrorHeight = Math.max(3, mirrorValue * 140);
+
+        // Gold to silver gradient based on amplitude
+        const r = Math.floor(200 - value * 60);
+        const g = Math.floor(168 - value * 40);
+        const b = Math.floor(75 + value * 180);
+        const alpha = 0.4 + value * 0.6;
+
+        // Glow effect
+        ctx.shadowBlur = value * 18;
+        ctx.shadowColor = `rgba(200,168,75,${value})`;
+
+        // Top bar
+        const grad = ctx.createLinearGradient(x, cy - mirrorHeight, x, cy);
+        grad.addColorStop(0, `rgba(245,245,245,${alpha * 0.9})`);
+        grad.addColorStop(0.5, `rgba(200,168,75,${alpha})`);
+        grad.addColorStop(1, `rgba(200,168,75,0.1)`);
+        ctx.fillStyle = grad;
         ctx.beginPath();
-        ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
-        ctx.fillStyle = p.color + Math.floor(p.alpha * 255).toString(16).padStart(2,"0");
+        ctx.roundRect(x, cy - mirrorHeight, barWidth, mirrorHeight, 2);
         ctx.fill();
-        p.x += p.vx;
-        p.y += p.vy;
-        p.vy += 0.055;
-        p.vx *= 0.99;
-        p.alpha -= p.decay;
-        if (p.alpha <= 0) particles.splice(i, 1);
+
+        // Bottom bar (mirror)
+        const grad2 = ctx.createLinearGradient(x, cy, x, cy + mirrorHeight);
+        grad2.addColorStop(0, `rgba(200,168,75,0.1)`);
+        grad2.addColorStop(0.5, `rgba(200,168,75,${alpha})`);
+        grad2.addColorStop(1, `rgba(245,245,245,${alpha * 0.9})`);
+        ctx.fillStyle = grad2;
+        ctx.beginPath();
+        ctx.roundRect(x, cy, barWidth, mirrorHeight, 2);
+        ctx.fill();
       }
+
+      ctx.shadowBlur = 0;
       frame = requestAnimationFrame(animate);
     };
 
@@ -1012,9 +1003,9 @@ Request: "${userText}"` }] });
         </div>
       )}
       {isSpeaking && (
-        <div style={{position:"fixed",top:0,left:0,width:"100%",height:"100%",zIndex:49,background:"rgba(8,8,12,0.85)",transition:"opacity 0.5s"}}>
-          <FireworksDisplay analyserRef={analyserRef}/>
-          <div style={{position:"absolute",bottom:40,left:0,right:0,textAlign:"center",fontSize:11,color:"rgba(200,168,75,0.5)",fontFamily:"'DM Mono',monospace",letterSpacing:"0.15em"}}>JARVIS SPEAKING</div>
+        <div style={{position:"fixed",top:0,left:0,width:"100%",height:"100%",zIndex:49,background:"rgba(6,6,10,0.92)",transition:"opacity 0.5s",display:"flex",alignItems:"center",justifyContent:"center"}}>
+          <VoiceVisualizer analyserRef={analyserRef}/>
+          <div style={{position:"absolute",bottom:40,left:0,right:0,textAlign:"center",fontSize:10,color:"rgba(200,168,75,0.4)",fontFamily:"'DM Mono',monospace",letterSpacing:"0.2em"}}>JARVIS SPEAKING</div>
         </div>
       )}
     </div>
