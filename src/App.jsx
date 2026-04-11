@@ -85,12 +85,14 @@ const callClaude = (body) => fetch("https://api.anthropic.com/v1/messages", {
   body: JSON.stringify(body)
 }).then(r => r.json());
 
+// ── Typing dots ──────────────────────────────────────────────────────────────
 const TypingDots = () => (
   <div style={{ display:"flex", alignItems:"center", gap:5, padding:"10px 14px", background:"rgba(255,255,255,0.04)", borderRadius:12, width:"fit-content", border:"0.5px solid rgba(255,255,255,0.08)" }}>
     {[0,1,2].map(i => <div key={i} style={{ width:7, height:7, borderRadius:"50%", background:"#C8A84B", animation:"pulse 1.2s ease-in-out infinite", animationDelay:`${i*0.2}s` }}/>)}
   </div>
 );
 
+// ── Tool badge ────────────────────────────────────────────────────────────────
 const ToolBadge = ({ name, status }) => {
   const map = { send_email:["#534AB7","#EEEDFE","✉ Preparing email"], trigger_ghl:["#993C1D","#FAECE7","⚡ Triggering GHL"] };
   const [fg, bg, label] = map[name] || ["#5F5E5A","#F1EFE8", name];
@@ -103,6 +105,7 @@ const ToolBadge = ({ name, status }) => {
 
 const htmlToPlain = (s) => (s || "").replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]+>/g, "").trim();
 
+// ── Email card ────────────────────────────────────────────────────────────────
 const EmailCard = ({ first_name, last_name, email, phone, subject, body, greeting, missing_email }) => {
   const [ghlStatus, setGhlStatus] = useState("ready");
   const [copied, setCopied]       = useState(false);
@@ -155,6 +158,7 @@ const EmailCard = ({ first_name, last_name, email, phone, subject, body, greetin
   );
 };
 
+// ── GHL card ──────────────────────────────────────────────────────────────────
 const GHLCard = ({ action, data }) => {
   const [sent, setSent] = useState(false);
   const labels = { add_contact:"Add Contact", create_task:"Create Task", log_deal:"Log Deal", trigger_workflow:"Trigger Workflow" };
@@ -174,6 +178,7 @@ const GHLCard = ({ action, data }) => {
   );
 };
 
+// ── Memory panel ──────────────────────────────────────────────────────────────
 const MemoryPanel = ({ memories, onDelete, onClose }) => (
   <div style={{ position:"absolute", top:0, right:0, bottom:0, width:260, background:"#111113", borderLeft:"0.5px solid rgba(255,255,255,0.1)", zIndex:10, display:"flex", flexDirection:"column" }}>
     <div style={{ padding:"12px 14px", borderBottom:"0.5px solid rgba(255,255,255,0.07)", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
@@ -199,14 +204,16 @@ const MemoryPanel = ({ memories, onDelete, onClose }) => (
   </div>
 );
 
+// ── Score helpers ─────────────────────────────────────────────────────────────
 const scoreColor = (s) => s >= 80 ? "#4ADE80" : s >= 60 ? "#C8A84B" : "#F0997B";
 const rankLabel  = (s) => s >= 80 ? "BUILD NOW" : s >= 60 ? "STRONG" : s >= 40 ? "POSSIBLE" : "PARK IT";
 
+// ── Idea Vault ────────────────────────────────────────────────────────────────
 const IdeaVault = ({ memories }) => {
   const [ideas,    setIdeas]    = useState([]);
   const [form,     setForm]     = useState(EMPTY_FORM);
   const [scoring,  setScoring]  = useState(false);
-  const [subView,  setSubView]  = useState("list");
+  const [subView,  setSubView]  = useState("list"); // list | add | detail
   const [selected, setSelected] = useState(null);
 
   useEffect(() => {
@@ -250,6 +257,7 @@ Idea: "${name}" — ${description} (Category: ${category})`;
 
   const top = ideas[0];
 
+  // ── List view ──
   if (subView === "list") return (
     <div style={{ display:"flex", flexDirection:"column", height:"100%", overflow:"hidden" }}>
       {top && (
@@ -288,14 +296,15 @@ Idea: "${name}" — ${description} (Category: ${category})`;
       <div style={{ padding:"10px 14px", borderTop:"0.5px solid rgba(255,255,255,0.07)" }}>
         <button onClick={()=>setSubView("add")}
           style={{ width:"100%", padding:"8px", background:"rgba(200,168,75,0.1)", border:"0.5px solid rgba(200,168,75,0.3)", borderRadius:8, color:"#C8A84B", fontSize:12, cursor:"pointer", fontFamily:"'DM Mono',monospace", letterSpacing:"0.06em", transition:"all 0.15s" }}
-          onMouseEnter={e=>e.currentTarget.style.background="rgba(200,168,75,0.18)"}
-          onMouseLeave={e=>e.currentTarget.style.background="rgba(200,168,75,0.1)"}>
+          onMouseEnter={e=>{ e.currentTarget.style.background="rgba(200,168,75,0.18)"; }}
+          onMouseLeave={e=>{ e.currentTarget.style.background="rgba(200,168,75,0.1)"; }}>
           + LOG IDEA
         </button>
       </div>
     </div>
   );
 
+  // ── Add view ──
   if (subView === "add") return (
     <div style={{ display:"flex", flexDirection:"column", height:"100%", overflow:"hidden" }}>
       <div style={{ padding:"10px 14px", borderBottom:"0.5px solid rgba(255,255,255,0.07)", display:"flex", alignItems:"center", gap:10 }}>
@@ -337,6 +346,7 @@ Idea: "${name}" — ${description} (Category: ${category})`;
     </div>
   );
 
+  // ── Detail view ──
   if (subView === "detail" && selected) return (
     <div style={{ display:"flex", flexDirection:"column", height:"100%", overflow:"hidden" }}>
       <div style={{ padding:"10px 14px", borderBottom:"0.5px solid rgba(255,255,255,0.07)", display:"flex", alignItems:"center", gap:10 }}>
@@ -347,6 +357,8 @@ Idea: "${name}" — ${description} (Category: ${category})`;
       <div style={{ flex:1, overflowY:"auto", padding:"16px 14px" }}>
         <div style={{ fontSize:16, fontWeight:600, color:"#E8E3D9", marginBottom:6, lineHeight:1.3 }}>{selected.name}</div>
         <div style={{ fontSize:12, color:"#555", marginBottom:20, lineHeight:1.6 }}>{selected.description}</div>
+
+        {/* Overall */}
         <div style={{ background:"rgba(255,255,255,0.03)", border:"0.5px solid rgba(255,255,255,0.07)", borderRadius:10, padding:"14px", marginBottom:16 }}>
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-end", marginBottom:10 }}>
             <div>
@@ -357,6 +369,8 @@ Idea: "${name}" — ${description} (Category: ${category})`;
           </div>
           <div style={{ fontSize:11, color:"#666", fontStyle:"italic", borderTop:"0.5px solid rgba(255,255,255,0.06)", paddingTop:10 }}>"{selected.scores.verdict}"</div>
         </div>
+
+        {/* Scores */}
         {[
           { label:"Revenue potential", key:"revenue_potential", w:"35%" },
           { label:"Speed to market",   key:"speed_to_market",   w:"25%" },
@@ -376,6 +390,8 @@ Idea: "${name}" — ${description} (Category: ${category})`;
             </div>
           </div>
         ))}
+
+        {/* Recommendation */}
         <div style={{ background:"rgba(200,168,75,0.06)", border:"0.5px solid rgba(200,168,75,0.2)", borderRadius:8, padding:"12px 14px", marginTop:16 }}>
           <div style={{ fontSize:9, color:"#C8A84B", letterSpacing:"0.1em", fontFamily:"'DM Mono',monospace", marginBottom:6 }}>JARVIS SAYS</div>
           <div style={{ fontSize:12, color:"#B0A990", lineHeight:1.6 }}>{selected.scores.best_move}</div>
@@ -393,6 +409,7 @@ Idea: "${name}" — ${description} (Category: ${category})`;
   return null;
 };
 
+// ── Main App ──────────────────────────────────────────────────────────────────
 export default function App() {
   const [messages,     setMessages]     = useState([]);
   const [input,        setInput]        = useState("");
@@ -401,7 +418,7 @@ export default function App() {
   const [panel,        setPanel]        = useState(null);
   const [savingMemory, setSavingMemory] = useState(false);
   const [activeTools,  setActiveTools]  = useState([]);
-  const [activeTab,    setActiveTab]    = useState("chat");
+  const [activeTab,    setActiveTab]    = useState("chat"); // "chat" | "ideas"
   const bottomRef = useRef(null);
 
   useEffect(() => {
@@ -539,6 +556,7 @@ Request: "${userText}"` }] });
         .tab-btn:hover{color:#E8E3D9!important}
       `}</style>
 
+      {/* ── Header ── */}
       <div style={{padding:"10px 14px",borderBottom:"0.5px solid rgba(255,255,255,0.07)",display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0}}>
         <div style={{display:"flex",alignItems:"center",gap:10}}>
           <div style={{width:30,height:30,borderRadius:"50%",background:"linear-gradient(135deg,#C8A84B,#8B6914)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,fontWeight:700,color:"#0D0D0F"}}>J</div>
@@ -559,6 +577,7 @@ Request: "${userText}"` }] });
         </div>
       </div>
 
+      {/* ── Tab switcher ── */}
       <div style={{display:"flex",borderBottom:"0.5px solid rgba(255,255,255,0.07)",flexShrink:0}}>
         {[
           { id:"chat",  label:"CHAT" },
@@ -571,6 +590,7 @@ Request: "${userText}"` }] });
         ))}
       </div>
 
+      {/* ── Chat quick actions (only on chat tab) ── */}
       {activeTab === "chat" && (
         <div style={{padding:"7px 12px",borderBottom:"0.5px solid rgba(255,255,255,0.05)",display:"flex",gap:5,overflowX:"auto",flexShrink:0}}>
           {QUICK_ACTIONS.map(a=>(
@@ -582,7 +602,10 @@ Request: "${userText}"` }] });
         </div>
       )}
 
+      {/* ── Body ── */}
       <div style={{flex:1,display:"flex",position:"relative",overflow:"hidden"}}>
+
+        {/* Chat view */}
         {activeTab === "chat" && (
           <div style={{flex:1,overflowY:"auto",padding:"12px 14px",display:"flex",flexDirection:"column",gap:10}}>
             {messages.map((m,i)=>(
@@ -608,6 +631,7 @@ Request: "${userText}"` }] });
           </div>
         )}
 
+        {/* Ideas view */}
         {activeTab === "ideas" && (
           <div style={{flex:1,overflow:"hidden",display:"flex",flexDirection:"column"}}>
             <IdeaVault memories={memories}/>
@@ -617,6 +641,7 @@ Request: "${userText}"` }] });
         {panel==="memory"&&activeTab==="chat"&&<div style={{animation:"slideIn 0.2s ease"}}><MemoryPanel memories={memories} onDelete={deleteMemory} onClose={()=>setPanel(null)}/></div>}
       </div>
 
+      {/* ── Input (chat only) ── */}
       {activeTab === "chat" && (
         <div style={{padding:"8px 12px",borderTop:"0.5px solid rgba(255,255,255,0.07)",flexShrink:0}}>
           <div style={{display:"flex",gap:8,alignItems:"flex-end",background:"rgba(255,255,255,0.04)",border:"0.5px solid rgba(255,255,255,0.1)",borderRadius:12,padding:"7px 8px 7px 12px"}}>
