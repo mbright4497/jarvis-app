@@ -439,6 +439,7 @@ export default function App() {
   const [activeTab,    setActiveTab]    = useState("chat"); // "chat" | "ideas"
   const [activeAgent,  setActiveAgent]  = useState(null);
   const [isListening,  setIsListening]  = useState(false);
+  const [isSpeaking,   setIsSpeaking]   = useState(false);
   const bottomRef = useRef(null);
 
   useEffect(() => {
@@ -636,10 +637,41 @@ Request: "${userText}"` }] });
     } catch(e) {
       setMessages(prev => { const u=[...prev]; u[u.length-1]={ role:"assistant", content:`Error: ${e.message}` }; return u; });
     }
+    // Speak the final assistant response
+    setMessages(prev => {
+      const last = prev[prev.length - 1];
+      if (last?.role === "assistant" && last?.content) {
+        speakText(last.content.slice(0, 500));
+      }
+      return prev;
+    });
     setActiveTools([]); setLoading(false);
   };
 
   const handleKey = (e) => { if (e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); sendMessage(); }};
+
+  const speakText = async (text) => {
+    const key = import.meta.env.VITE_ELEVEN_KEY;
+    if (!key || !text) return;
+    const DANIEL = "onwK4e9ZLuTAKqWW03F9";
+    try {
+      setIsSpeaking(true);
+      const res = await fetch("https://api.elevenlabs.io/v1/text-to-speech/" + DANIEL, {
+        method: "POST",
+        headers: { "xi-api-key": key, "Content-Type": "application/json", "Accept": "audio/mpeg" },
+        body: JSON.stringify({ text, model_id: "eleven_turbo_v2", voice_settings: { stability: 0.5, similarity_boost: 0.75 } }),
+      });
+      if (!res.ok) { setIsSpeaking(false); return; }
+      const buffer = await res.arrayBuffer();
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const decoded = await ctx.decodeAudioData(buffer);
+      const source = ctx.createBufferSource();
+      source.buffer = decoded;
+      source.connect(ctx.destination);
+      source.onended = () => { setIsSpeaking(false); ctx.close(); };
+      source.start(0);
+    } catch { setIsSpeaking(false); }
+  };
 
   // ── Voice input — Web Speech API ──────────────────────────────────────────
   // No API key needed. Browser handles transcription locally.
