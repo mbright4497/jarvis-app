@@ -949,7 +949,9 @@ Request: "${userText}"` }] });
             }
 
             if (b.name === "write_github_file") {
+              console.log("WRITE INPUT:", JSON.stringify(input));
               const toolResult = await callTool("github_write_file", input);
+              console.log("WRITE RESULT:", JSON.stringify(toolResult));
               return { type: "tool_result", tool_use_id: b.id, content: JSON.stringify(toolResult) };
             }
 
