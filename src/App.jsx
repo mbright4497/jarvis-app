@@ -873,7 +873,7 @@ Request: "${userText}"` }] });
           body: JSON.stringify({
             model: MODEL, max_tokens: 1000, stream: true,
             system: buildSystemPrompt(),
-            tools: TOOLS, tool_choice: { type:"auto" },
+            tools: TOOLS, tool_choice: forceToolUse ? { type:"any" } : { type:"auto" },
             messages: [...apiMessages, { role:"assistant", content:assistantContent }, { role:"user", content:toolResults }],
           }),
         });
