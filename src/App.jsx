@@ -798,6 +798,7 @@ Request: "${userText}"` }] });
             const ev = JSON.parse(line.slice(6).trim());
             if (ev.type === "content_block_start") {
               const cb = ev.content_block;
+              console.log("BLOCK START:", cb.type, cb.name || "");
               blocks[ev.index] = cb.type === "tool_use"
                 ? { type:"tool_use", id:cb.id, name:cb.name, inputStr:"" }
                 : { type:"text", text:"" };
@@ -817,6 +818,7 @@ Request: "${userText}"` }] });
           } catch {}
         }
       }
+      console.log("STOP REASON:", stopReason, "BLOCKS:", JSON.stringify(Object.values(blocks).map(b => ({ type: b?.type, name: b?.name }))));
       if (stopReason === "tool_use") {
         const toolBlocks = Object.values(blocks).filter(b => b?.type === "tool_use");
         const emailDrafts = []; const ghlActions = [];
