@@ -897,6 +897,7 @@ Request: "${userText}"` }] });
             if (!line.startsWith("data: ")) continue;
             try {
               const ev = JSON.parse(line.slice(6).trim());
+              console.log("R2 EVENT:", ev.type, ev.content_block?.type || ev.delta?.type || "");
               if (ev.type === "content_block_delta" && ev.delta?.type === "text_delta") {
                 finalText += ev.delta.text;
                 setMessages(prev => { const u=[...prev]; u[u.length-1]={ role:"assistant", content:finalText, emailDrafts, ghlActions }; return u; });
@@ -904,6 +905,7 @@ Request: "${userText}"` }] });
             } catch {}
           }
         }
+        console.log("R2 DONE. Final text length:", finalText.length);
       }
     } catch(e) {
       setMessages(prev => { const u=[...prev]; u[u.length-1]={ role:"assistant", content:`Error: ${e.message}` }; return u; });
