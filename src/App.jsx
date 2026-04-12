@@ -97,7 +97,7 @@ const QUICK_ACTIONS = [
 
 // ── Agent Switcher ─────────────────────────────────────────────────────────────
 const AGENT_PROMPTS = {
-  CFO:  `ACTIVE MODE: CFO — Focus exclusively on revenue, MRR/ARR, runway, pricing strategy, Stripe data, and financial decisions across ClosingPilot, HubLinkPro, MOAT, Open Claw. Surface risks. Protect runway. Push toward $1M ARR by Q1 2027. Every answer ends with a financial implication.`,
+  CFO:  `ACTIVE MODE: CFO — Focus exclusively on revenue, MRR/ARR, runway, pricing strategy, Stripe data, and financial decisions across ClosingPilot, HubLinkPro, and MOAT. Surface risks. Protect runway. Push toward $1M ARR by Q1 2027. Every answer ends with a financial implication.`,
   CMO:  `ACTIVE MODE: CMO — Focus on Facebook ads, HubLinkPro campaigns, positioning, hooks, copy, funnels, and GTM strategy. Think in conversion, not impressions. Every answer moves Matthew closer to his next paying customer.`,
   CTO:  `ACTIVE MODE: CTO — Focus on JARVIS upgrades, Closing Jet builds, MOAT development, Claude AI implementation, and stack decisions. Write clean production code. Explain the WHY behind every technical decision. Only build what ships.`,
   MOAT: `ACTIVE MODE: MOAT — Focus on identifying dying apps with trapped paying users, scoring replacement opportunities, global market sizing, and AI-native build planning. Target: 3 MOAT apps per quarter, multi-language, 4B addressable market.`,
@@ -268,7 +268,7 @@ const IdeaVault = ({ memories }) => {
     const memCtx = memories.length
       ? `\nMatt's context: ${memories.map(m=>`${m.key}: ${m.value}`).join(", ")}`
       : "";
-    const prompt = `You are JARVIS scoring a business idea for Matt Bright — solo founder CEO of ClosingPilot (real estate SaaS), HubLinkPro (AI agency), MOAT (app intelligence), Open Claw (AI automation). Goal: $1M ARR by Q1 2027, 3 apps/quarter, 4B global users.${memCtx}
+    const prompt = `You are JARVIS scoring a business idea for Matt Bright — solo founder CEO of ClosingPilot (real estate SaaS), HubLinkPro (AI agency), and MOAT (app intelligence). Goal: $1M ARR by Q1 2027, 3 apps/quarter, 4B global users.${memCtx}
 
 Score this idea. Return ONLY valid JSON, no markdown:
 {"revenue_potential":<0-100>,"speed_to_market":<0-100>,"ease_of_sale":<0-100>,"stack_leverage":<0-100>,"overall":<revenue*0.35+speed*0.25+ease*0.20+stack*0.20, round to 1 decimal>,"verdict":"<punchy 10-word max verdict>","best_move":"<exactly what Matt should do with this idea right now, 1 sentence>"}
