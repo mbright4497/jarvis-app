@@ -6,6 +6,7 @@ const MODEL = "claude-sonnet-4-6";
 
 const SUPABASE_URL = "https://gpbuqpwusztorbwxxkka.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdwYnVxcHd1c3p0b3Jid3h4a2thIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU4MjMxMDcsImV4cCI6MjA5MTM5OTEwN30._EvUhea4Y2e2DqmFxxRwkzx5UkyaGC5rkuphMU7cmhw";
+const JARVIS_TOOLS_URL = "https://gpbuqpwusztorbwxxkka.supabase.co/functions/v1/jarvis-tools";
 const supabase = {
   from: (table) => ({
     select: (cols = "*") => ({
@@ -57,9 +58,11 @@ Capabilities: emails, SOPs, strategy, ClosingPilot product, Facebook Ads, revenu
 
 Format: Lead with answer, then reasoning. SOPs = numbered steps. Strategy = recommendation first.
 
-TOOLS AVAILABLE — YOU HAVE EXACTLY TWO TOOLS:
+TOOLS AVAILABLE:
 1. send_email — fires a real email through GHL. Fully connected and working.
 2. trigger_ghl — adds contacts or triggers GHL automations.
+3. query_github — read files, list repo contents, or recent commits via the Edge Function.
+4. query_supabase — query live Supabase tables (memories, ideas) via the Edge Function.
 
 EMAIL RULES — NON-NEGOTIABLE:
 - You have a send_email tool. It works. Use it.
@@ -102,6 +105,34 @@ const TOOLS = [
         data:   { type: "object" }
       },
       required: ["action", "data"]
+    }
+  },
+  {
+    name: "query_github",
+    description: "Read files, list contents, or get recent commits from a GitHub repo. Use for Closing Jet (owner: mbright4497, repo: dealpilot-tn) or JARVIS (owner: mbright4497, repo: jarvis-app).",
+    input_schema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["get_file", "list_files", "recent_commits"] },
+        owner: { type: "string" },
+        repo: { type: "string" },
+        path: { type: "string" },
+        count: { type: "number" }
+      },
+      required: ["action", "owner", "repo"]
+    }
+  },
+  {
+    name: "query_supabase",
+    description: "Query any Supabase table for live data. Tables: memories, ideas. For Closing Jet data use owner mbright4497.",
+    input_schema: {
+      type: "object",
+      properties: {
+        table: { type: "string" },
+        select: { type: "string" },
+        limit: { type: "number" }
+      },
+      required: ["table"]
     }
   }
 ];
@@ -147,6 +178,16 @@ const callClaude = (body) => fetch("https://api.anthropic.com/v1/messages", {
   headers: { "Content-Type": "application/json", "x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
   body: JSON.stringify(body)
 }).then(r => r.json());
+
+const callTool = async (tool, params = {}) => {
+  const res = await fetch(JARVIS_TOOLS_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tool, params }),
+  });
+  const data = await res.json();
+  return data.result;
+};
 
 // ── Typing dots ──────────────────────────────────────────────────────────────
 const TypingDots = () => (
@@ -748,8 +789,19 @@ Request: "${userText}"` }] });
           if (b.name === "trigger_ghl") ghlActions.push(input);
           return { ...b, input };
         });
-        const toolResults = parsedTools.map(b => ({
-          type:"tool_result", tool_use_id:b.id, content:JSON.stringify({ success:true })
+        const toolResults = await Promise.all(parsedTools.map(async (b) => {
+          const input = b.input;
+          if (b.name === "query_github") {
+            const { action, owner, repo, path, count } = input;
+            const toolMap = { get_file: "github_get_file", list_files: "github_list_files", recent_commits: "github_recent_commits" };
+            const toolResult = await callTool(toolMap[action], { owner, repo, path, count });
+            return { type: "tool_result", tool_use_id: b.id, content: JSON.stringify(toolResult) };
+          }
+          if (b.name === "query_supabase") {
+            const toolResult = await callTool("supabase_query", input);
+            return { type: "tool_result", tool_use_id: b.id, content: JSON.stringify(toolResult) };
+          }
+          return { type: "tool_result", tool_use_id: b.id, content: JSON.stringify({ success: true }) };
         }));
         const assistantContent = Object.values(blocks).filter(Boolean).map(b =>
           b.type === "text"
