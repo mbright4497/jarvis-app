@@ -73,11 +73,12 @@ Capabilities: emails, SOPs, strategy, ClosingPilot product, Facebook Ads, revenu
 
 Format: Lead with answer, then reasoning. SOPs = numbered steps. Strategy = recommendation first.
 
-TOOLS AVAILABLE:
+TOOLS AVAILABLE — you have exactly five tools: send_email, trigger_ghl, query_github, query_supabase, write_github_file.
 1. send_email — fires a real email through GHL. Fully connected and working.
 2. trigger_ghl — adds contacts or triggers GHL automations.
 3. query_github — read files, list repo contents, or recent commits via the Edge Function.
 4. query_supabase — query live Supabase tables (memories, ideas) via the Edge Function.
+5. write_github_file — create or update a file in a GitHub repo via the Edge Function. For updates, read the file first (query_github get_file) to obtain the SHA.
 
 EMAIL RULES — NON-NEGOTIABLE:
 - You have a send_email tool. It works. Use it.
@@ -148,6 +149,22 @@ const TOOLS = [
         limit: { type: "number" }
       },
       required: ["table"]
+    }
+  },
+  {
+    name: "write_github_file",
+    description: "Write or update a file directly in a GitHub repo. Use for Closing Jet (owner: mbright4497, repo: dealpilot-tn). Always read the file first to get its SHA before updating. Commit message should describe the change clearly.",
+    input_schema: {
+      type: "object",
+      properties: {
+        owner:   { type: "string" },
+        repo:    { type: "string" },
+        path:    { type: "string", description: "Full file path e.g. web/src/app/dashboard/page.tsx" },
+        content: { type: "string", description: "Complete new file content" },
+        message: { type: "string", description: "Commit message" },
+        sha:     { type: "string", description: "SHA of existing file — required for updates, omit for new files" }
+      },
+      required: ["owner", "repo", "path", "content", "message"]
     }
   }
 ];
@@ -814,6 +831,10 @@ Request: "${userText}"` }] });
           }
           if (b.name === "query_supabase") {
             const toolResult = await callTool("supabase_query", input);
+            return { type: "tool_result", tool_use_id: b.id, content: JSON.stringify(toolResult) };
+          }
+          if (b.name === "write_github_file") {
+            const toolResult = await callTool("github_write_file", input);
             return { type: "tool_result", tool_use_id: b.id, content: JSON.stringify(toolResult) };
           }
           return { type: "tool_result", tool_use_id: b.id, content: JSON.stringify({ success: true }) };
