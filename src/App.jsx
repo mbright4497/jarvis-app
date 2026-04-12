@@ -18,8 +18,22 @@ const supabase = {
       headers: { "apikey": SUPABASE_ANON_KEY, "Authorization": `Bearer ${SUPABASE_ANON_KEY}`, "Content-Type": "application/json", "Prefer": "return=representation" },
       body: JSON.stringify(rows)
     }).then(r => r.json()).then(data => ({ data, error: null })).catch(e => ({ data: null, error: e })),
+    upsert: (rows, opts = {}) => {
+      const body = Array.isArray(rows) ? rows : [rows];
+      const onConflict = opts.onConflict ?? "id";
+      return fetch(`${SUPABASE_URL}/rest/v1/${table}?on_conflict=${encodeURIComponent(onConflict)}`, {
+        method: "POST",
+        headers: {
+          "apikey": SUPABASE_ANON_KEY,
+          "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
+          "Content-Type": "application/json",
+          "Prefer": "return=minimal,resolution=merge-duplicates",
+        },
+        body: JSON.stringify(body),
+      }).then(() => ({ data: null, error: null })).catch(e => ({ data: null, error: e }));
+    },
     delete: () => ({
-      eq: (col, val) => fetch(`${SUPABASE_URL}/rest/v1/${table}?${col}=eq.${val}`, {
+      eq: (col, val) => fetch(`${SUPABASE_URL}/rest/v1/${table}?${col}=eq.${encodeURIComponent(val)}`, {
         method: "DELETE",
         headers: { "apikey": SUPABASE_ANON_KEY, "Authorization": `Bearer ${SUPABASE_ANON_KEY}` }
       }).then(() => ({ error: null })).catch(e => ({ error: e }))
@@ -562,18 +576,24 @@ export default function App() {
   const analyserRef = useRef(null);
 
   useEffect(() => {
-    const saved = storage.get("jarvis_memories") || [];
-    setMemories(saved);
-    setMessages([{ role:"assistant", content: saved.length > 0
-      ? `J.A.R.V.I.S. online. ${saved.length} memories loaded. GHL wired to iHome Realty. What are we executing today, Matthew?`
-      : `J.A.R.V.I.S. online. GHL Email Sender live. What's the first move, Matthew?`
-    }]);
+    supabase.from("memories").select("*").order("updated_at", { ascending: false })
+      .then(({ data }) => {
+        const saved = data || [];
+        setMemories(saved);
+        setMessages([{ role:"assistant", content: saved.length > 0
+          ? `J.A.R.V.I.S. online. ${saved.length} memories loaded. GHL wired to iHome Realty. What are we executing today, Matthew?`
+          : `J.A.R.V.I.S. online. GHL Email Sender live. What's the first move, Matthew?`
+        }]);
+      });
   }, []);
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior:"smooth" }); }, [messages, loading]);
 
-  const saveMemories = (mem) => { setMemories(mem); storage.set("jarvis_memories", mem); };
-  const deleteMemory = (key) => saveMemories(memories.filter(m => m.key !== key));
+  const saveMemories = async (mem) => { setMemories(mem); };
+  const deleteMemory = async (key) => {
+    await supabase.from("memories").delete().eq("key", key);
+    setMemories(prev => prev.filter(m => m.key !== key));
+  };
 
   const buildSystemPrompt = () => {
     const agentBlock = activeAgent && AGENT_PROMPTS[activeAgent]
@@ -591,9 +611,21 @@ export default function App() {
         messages:[{ role:"user", content:`${EXTRACT_PROMPT}\n\nMessage: "${msg}"` }] });
       const parsed = JSON.parse(data.content?.map(b=>b.text||"").join("").replace(/```json|```/g,"").trim());
       if (parsed.hasNewFacts && parsed.facts?.length > 0) {
-        const updated = [...memories];
-        for (const f of parsed.facts) { const i = updated.findIndex(m=>m.key===f.key); i>=0?updated[i]=f:updated.push(f); }
-        saveMemories(updated);
+        // Upsert each fact to Supabase
+        for (const f of parsed.facts) {
+          await supabase.from("memories").upsert(
+            { key: f.key, value: f.value, category: f.category, updated_at: new Date().toISOString() },
+            { onConflict: "key" }
+          );
+        }
+        setMemories(prev => {
+          const updated = [...prev];
+          for (const f of parsed.facts) {
+            const i = updated.findIndex(m => m.key === f.key);
+            i >= 0 ? updated[i] = { ...updated[i], ...f } : updated.push(f);
+          }
+          return updated;
+        });
         return parsed.facts.length;
       }
     } catch {}
