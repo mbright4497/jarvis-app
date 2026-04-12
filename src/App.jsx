@@ -687,6 +687,7 @@ export default function App() {
   const [activeTab,    setActiveTab]    = useState("chat"); // "chat" | "ideas"
   const [activeAgent,  setActiveAgent]  = useState(null);
   const [isListening,  setIsListening]  = useState(false);
+  const [voiceEnabled, setVoiceEnabled] = useState(true);
   const [isSpeaking,   setIsSpeaking]   = useState(false);
   const bottomRef = useRef(null);
   const analyserRef = useRef(null);
@@ -1075,6 +1076,7 @@ Request: "${userText}"` }] });
   const handleKey = (e) => { if (e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); sendMessage(); }};
 
   const speakText = async (text) => {
+    if (!voiceEnabled) return;
     const key = import.meta.env.VITE_ELEVEN_KEY;
     if (!key || !text) return;
     const DANIEL = "onwK4e9ZLuTAKqWW03F9";
@@ -1324,6 +1326,11 @@ Request: "${userText}"` }] });
               style={{flex:1,background:"transparent",border:"none",color:"#E8E3D9",fontSize:13,lineHeight:1.6,maxHeight:90,overflowY:"auto",caretColor:"#C8A84B"}}
               onInput={e=>{e.target.style.height="auto";e.target.style.height=Math.min(e.target.scrollHeight,90)+"px";}}
             />
+            <button onClick={() => setVoiceEnabled(v => !v)}
+              title={voiceEnabled ? "Voice on — click to mute" : "Voice off — click to enable"}
+              style={{width:30,height:30,borderRadius:"50%",background:voiceEnabled?"rgba(200,168,75,0.15)":"rgba(255,255,255,0.05)",border:voiceEnabled?"0.5px solid rgba(200,168,75,0.4)":"0.5px solid rgba(255,255,255,0.1)",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,transition:"all 0.15s"}}>
+              <span style={{fontSize:14}}>{voiceEnabled ? "🔊" : "🔇"}</span>
+            </button>
             <button onClick={startListening} disabled={isListening || loading}
               style={{width:30,height:30,borderRadius:"50%",background:isListening?"rgba(200,168,75,0.2)":"rgba(255,255,255,0.05)",border:isListening?"0.5px solid rgba(200,168,75,0.6)":"0.5px solid rgba(255,255,255,0.1)",cursor:isListening?"default":"pointer",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,transition:"all 0.15s",animation:isListening?"micPulse 1.2s ease-out infinite":""}}>
               {isListening
