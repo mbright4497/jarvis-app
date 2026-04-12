@@ -5,7 +5,7 @@ const ANTHROPIC_KEY = import.meta.env.VITE_ANTHROPIC_KEY;
 const MODEL = "claude-sonnet-4-6";
 
 const SUPABASE_URL = "https://gpbuqpwusztorbwxxkka.supabase.co";
-const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdwYnVxcHd1c3p0b3Jid3h4a2thIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU4MjMxMDcsImV4cCI6MjA5MTM5OTEwN30._EvUhea4Y2e2DqmFxxRwkzx5UkyaGC5rkuphMU7cmhw";
 const supabase = {
   from: (table) => ({
     select: (cols = "*") => ({
