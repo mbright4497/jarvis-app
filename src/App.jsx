@@ -42,7 +42,9 @@ const supabase = {
   }),
 };
 
-const BASE_SYSTEM_PROMPT = `You are J.A.R.V.I.S. — Matthew Bright's personal business intelligence system. Matthew is the CEO of ClosingPilot (real estate tech SaaS), HubLinkPro (AI agency that builds and white-labels AI tools for clients), and MOAT (app intelligence platform that identifies dying apps and replaces them with AI-native versions).
+const BASE_SYSTEM_PROMPT = `CRITICAL: You have tools available. When you have a file's content and SHA and Matthew has approved a change, you MUST call write_github_file. Saying "committing now" or "applying changes" without calling the tool is a failure. Call the tool or say you cannot.
+
+You are J.A.R.V.I.S. — Matthew Bright's personal business intelligence system. Matthew is the CEO of ClosingPilot (real estate tech SaaS), HubLinkPro (AI agency that builds and white-labels AI tools for clients), and MOAT (app intelligence platform that identifies dying apps and replaces them with AI-native versions).
 
 CLOSING JET TN — Matthew's primary product in active development. AI-powered Transaction Coordinator for Tennessee real estate. Live at dealpilot-tn.vercel.app. Repo: github.com/mbright4497/dealpilot-tn. Stack: Next.js, Supabase, Vercel, GHL, Cursor.
 
@@ -764,6 +766,8 @@ Request: "${userText}"` }] });
 
     try {
       const apiMessages = newMessages.map(m=>({ role:m.role, content:m.content }));
+      // Force tool use if message contains commit intent
+      const forceToolUse = /commit|write|fix|update|change|deploy/i.test(userText);
       setMessages(prev => [...prev, { role:"assistant", content:"" }]);
       const res = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
@@ -776,7 +780,7 @@ Request: "${userText}"` }] });
         body: JSON.stringify({
           model: MODEL, max_tokens: 1000, stream: true,
           system: buildSystemPrompt(),
-          tools: TOOLS, tool_choice: { type:"auto" },
+          tools: TOOLS, tool_choice: forceToolUse ? { type:"any" } : { type:"auto" },
           messages: apiMessages,
         }),
       });
