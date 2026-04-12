@@ -865,7 +865,11 @@ Request: "${userText}"` }] });
             messages: [...apiMessages, { role:"assistant", content:assistantContent }, { role:"user", content:toolResults }],
           }),
         });
-        if (!res2.ok) throw new Error(`API ${res2.status}`);
+        if (!res2.ok) {
+          const errText = await res2.text();
+          setMessages(prev => { const u=[...prev]; u[u.length-1]={ role:"assistant", content:`Tool error: ${res2.status} — ${errText}` }; return u; });
+          setActiveTools([]); setLoading(false); return;
+        }
         const reader2 = res2.body.getReader();
         let buf2 = ""; let finalText = "";
         while (true) {
