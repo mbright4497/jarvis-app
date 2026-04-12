@@ -817,26 +817,31 @@ Request: "${userText}"` }] });
         const parsedTools = toolBlocks.map(b => {
           let input = {};
           try { input = JSON.parse(b.inputStr || "{}"); } catch {}
-          if (b.name === "send_email")  emailDrafts.push(input);
-          if (b.name === "trigger_ghl") ghlActions.push(input);
           return { ...b, input };
         });
         const toolResults = await Promise.all(parsedTools.map(async (b) => {
-          const input = b.input;
+          const { input } = b;
+
+          if (b.name === "send_email") emailDrafts.push(input);
+          if (b.name === "trigger_ghl") ghlActions.push(input);
+
           if (b.name === "query_github") {
             const { action, owner, repo, path, count } = input;
             const toolMap = { get_file: "github_get_file", list_files: "github_list_files", recent_commits: "github_recent_commits" };
             const toolResult = await callTool(toolMap[action], { owner, repo, path, count });
             return { type: "tool_result", tool_use_id: b.id, content: JSON.stringify(toolResult) };
           }
+
           if (b.name === "query_supabase") {
             const toolResult = await callTool("supabase_query", input);
             return { type: "tool_result", tool_use_id: b.id, content: JSON.stringify(toolResult) };
           }
+
           if (b.name === "write_github_file") {
             const toolResult = await callTool("github_write_file", input);
             return { type: "tool_result", tool_use_id: b.id, content: JSON.stringify(toolResult) };
           }
+
           return { type: "tool_result", tool_use_id: b.id, content: JSON.stringify({ success: true }) };
         }));
         const assistantContent = Object.values(blocks).filter(Boolean).map(b =>
