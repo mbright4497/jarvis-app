@@ -886,7 +886,9 @@ Request: "${userText}"` }] });
           setActiveTools([]); setLoading(false); return;
         }
         const reader2 = res2.body.getReader();
-        let buf2 = ""; let finalText = "";
+        let buf2 = "";
+        let blocks2 = {};
+        let stopReason2 = "";
         while (true) {
           const { done, value } = await reader2.read();
           if (done) break;
@@ -897,15 +899,117 @@ Request: "${userText}"` }] });
             if (!line.startsWith("data: ")) continue;
             try {
               const ev = JSON.parse(line.slice(6).trim());
-              console.log("R2 EVENT:", ev.type, ev.content_block?.type || ev.delta?.type || "");
-              if (ev.type === "content_block_delta" && ev.delta?.type === "text_delta") {
-                finalText += ev.delta.text;
-                setMessages(prev => { const u=[...prev]; u[u.length-1]={ role:"assistant", content:finalText, emailDrafts, ghlActions }; return u; });
+              if (ev.type === "content_block_start") {
+                const cb = ev.content_block;
+                blocks2[ev.index] = cb.type === "tool_use"
+                  ? { type:"tool_use", id:cb.id, name:cb.name, inputStr:"" }
+                  : { type:"text", text:"" };
+                if (cb.type === "tool_use") setActiveTools(prev => [...prev, { name:cb.name, status:"running" }]);
               }
+              if (ev.type === "content_block_delta") {
+                const b = blocks2[ev.index];
+                if (!b) continue;
+                if (ev.delta.type === "text_delta") {
+                  b.text += ev.delta.text;
+                  const snap = b.text;
+                  setMessages(prev => { const u=[...prev]; u[u.length-1]={ role:"assistant", content:snap, emailDrafts, ghlActions }; return u; });
+                }
+                if (ev.delta.type === "input_json_delta") b.inputStr += ev.delta.partial_json;
+              }
+              if (ev.type === "message_delta") stopReason2 = ev.delta.stop_reason;
             } catch {}
           }
         }
-        console.log("R2 DONE. Final text length:", finalText.length);
+        const r2Text = Object.values(blocks2).filter(b => b?.type === "text").map(b => b.text || "").join("");
+        console.log("R2 DONE. stopReason2:", stopReason2, "text length:", r2Text.length);
+
+        if (stopReason2 === "tool_use") {
+          const toolBlocks2 = Object.values(blocks2).filter(b => b?.type === "tool_use");
+          const parsedTools2 = toolBlocks2.map(b => {
+            let input = {};
+            try { input = JSON.parse(b.inputStr || "{}"); } catch {}
+            return { ...b, input };
+          });
+          const toolResults2 = await Promise.all(parsedTools2.map(async (b) => {
+            const { input } = b;
+
+            if (b.name === "send_email") emailDrafts.push(input);
+            if (b.name === "trigger_ghl") ghlActions.push(input);
+
+            if (b.name === "query_github") {
+              const { action, owner, repo, path, count } = input;
+              const toolMap = { get_file: "github_get_file", list_files: "github_list_files", recent_commits: "github_recent_commits" };
+              const toolResult = await callTool(toolMap[action], { owner, repo, path, count });
+              return { type: "tool_result", tool_use_id: b.id, content: JSON.stringify(toolResult) };
+            }
+
+            if (b.name === "query_supabase") {
+              const toolResult = await callTool("supabase_query", input);
+              return { type: "tool_result", tool_use_id: b.id, content: JSON.stringify(toolResult) };
+            }
+
+            if (b.name === "write_github_file") {
+              const toolResult = await callTool("github_write_file", input);
+              return { type: "tool_result", tool_use_id: b.id, content: JSON.stringify(toolResult) };
+            }
+
+            return { type: "tool_result", tool_use_id: b.id, content: JSON.stringify({ success: true }) };
+          }));
+          const assistantContent2 = Object.values(blocks2).filter(Boolean).map(b =>
+            b.type === "text"
+              ? { type:"text", text: b.text || "." }
+              : { type:"tool_use", id:b.id, name:b.name, input: parsedTools2.find(p=>p.id===b.id)?.input || {} }
+          );
+          setMessages(prev => { const u=[...prev]; u[u.length-1]={ role:"assistant", content:"" }; return u; });
+          const res3 = await fetch("https://api.anthropic.com/v1/messages", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-api-key": ANTHROPIC_KEY,
+              "anthropic-version": "2023-06-01",
+              "anthropic-dangerous-direct-browser-access": "true",
+            },
+            body: JSON.stringify({
+              model: MODEL, max_tokens: 1000, stream: true,
+              system: buildSystemPrompt(),
+              tools: TOOLS,
+              tool_choice: { type: "auto" },
+              messages: [
+                ...apiMessages,
+                { role:"assistant", content:assistantContent },
+                { role:"user", content:toolResults },
+                { role:"assistant", content:assistantContent2 },
+                { role:"user", content:toolResults2 },
+              ],
+            }),
+          });
+          if (!res3.ok) {
+            const errText = await res3.text();
+            setMessages(prev => { const u=[...prev]; u[u.length-1]={ role:"assistant", content:`Round 3 error: ${res3.status} — ${errText}` }; return u; });
+            setActiveTools([]); setLoading(false); return;
+          }
+          const reader3 = res3.body.getReader();
+          let buf3 = "";
+          let finalText3 = "";
+          while (true) {
+            const { done, value } = await reader3.read();
+            if (done) break;
+            buf3 += dec.decode(value, { stream:true });
+            const lines = buf3.split("\n");
+            buf3 = lines.pop() ?? "";
+            for (const line of lines) {
+              if (!line.startsWith("data: ")) continue;
+              try {
+                const ev = JSON.parse(line.slice(6).trim());
+                if (ev.type === "content_block_delta" && ev.delta?.type === "text_delta") {
+                  finalText3 += ev.delta.text;
+                  setMessages(prev => { const u=[...prev]; u[u.length-1]={ role:"assistant", content:finalText3, emailDrafts, ghlActions }; return u; });
+                }
+              } catch {}
+            }
+          }
+          console.log("R3 DONE. Final text length:", finalText3.length);
+        }
       }
     } catch(e) {
       setMessages(prev => { const u=[...prev]; u[u.length-1]={ role:"assistant", content:`Error: ${e.message}` }; return u; });
