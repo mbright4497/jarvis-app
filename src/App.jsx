@@ -896,7 +896,7 @@ Request: "${userText}"` }] });
   const ideaCount = (storage.get("jarvis_ideas") || []).length;
 
   return (
-    <div style={{display:"flex",flexDirection:"column",height:"100vh",background:"#0D0D0F",color:"#E8E3D9",fontFamily:"'DM Sans','Segoe UI',sans-serif",position:"relative",overflow:"hidden"}}>
+    <div style={{display:"flex",flexDirection:"column",height:"100svh",paddingTop:"env(safe-area-inset-top)",background:"#0D0D0F",color:"#E8E3D9",fontFamily:"'DM Sans','Segoe UI',sans-serif",position:"relative",overflow:"hidden"}}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap');
         @keyframes pulse{0%,100%{opacity:.3;transform:scale(.8)}50%{opacity:1;transform:scale(1)}}
@@ -1043,7 +1043,7 @@ Request: "${userText}"` }] });
 
       {/* ── Input (chat only) ── */}
       {activeTab === "chat" && (
-        <div style={{padding:"8px 12px",borderTop:"0.5px solid rgba(255,255,255,0.07)",flexShrink:0}}>
+        <div style={{padding:"8px 12px",paddingBottom:"calc(8px + env(safe-area-inset-bottom))",borderTop:"0.5px solid rgba(255,255,255,0.07)",flexShrink:0}}>
           <div style={{display:"flex",gap:8,alignItems:"flex-end",background:"rgba(255,255,255,0.04)",border:"0.5px solid rgba(255,255,255,0.1)",borderRadius:12,padding:"7px 8px 7px 12px"}}>
             <textarea value={input} onChange={e=>setInput(e.target.value)} onKeyDown={handleKey}
               placeholder="Command J.A.R.V.I.S. — email, GHL, strategy, ClosingPilot..."
