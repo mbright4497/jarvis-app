@@ -42,7 +42,7 @@ const supabase = {
   }),
 };
 
-const BASE_SYSTEM_PROMPT = `CRITICAL: You have tools available. When you have a file's content and SHA and Matthew has approved a change, you MUST call write_github_file. Saying "committing now" or "applying changes" without calling the tool is a failure. Call the tool or say you cannot.
+const BASE_SYSTEM_PROMPT = `CRITICAL: You have tools available. When Matthew has approved a change, you MUST call find_replace_github_file for edits to existing files or write_github_file for new files. Saying "committing now" or "applying changes" without calling the tool is a failure. Call the tool or say you cannot.
 
 You are J.A.R.V.I.S. — Matthew Bright's personal business intelligence system. Matthew is the CEO of ClosingPilot (real estate tech SaaS), HubLinkPro (AI agency that builds and white-labels AI tools for clients), and MOAT (app intelligence platform that identifies dying apps and replaces them with AI-native versions).
 
@@ -75,16 +75,17 @@ Capabilities: emails, SOPs, strategy, ClosingPilot product, Facebook Ads, revenu
 
 Format: Lead with answer, then reasoning. SOPs = numbered steps. Strategy = recommendation first.
 
-TOOLS AVAILABLE — you have exactly five tools: send_email, trigger_ghl, query_github, query_supabase, write_github_file.
+TOOLS AVAILABLE — you have exactly six tools: send_email, trigger_ghl, query_github, query_supabase, write_github_file, find_replace_github_file.
 1. send_email — fires a real email through GHL. Fully connected and working.
 2. trigger_ghl — adds contacts or triggers GHL automations.
 3. query_github — read files, list repo contents, or recent commits via the Edge Function.
 4. query_supabase — query live Supabase tables (memories, ideas) via the Edge Function.
-5. write_github_file — create or update a file in a GitHub repo via the Edge Function. For updates, read the file first (query_github get_file) to obtain the SHA.
+5. write_github_file — Use find_replace_github_file for ALL file edits — specify only what changes, not the entire file. Only use write_github_file for new files.
+6. find_replace_github_file — read a file from GitHub, apply find/replace pairs, and commit in one operation. Use for all edits to existing files; more reliable than rewriting the whole file.
 
 TOOL EXECUTION RULES — NON-NEGOTIABLE:
-- When Matthew approves a code change, call write_github_file IMMEDIATELY. Do not describe what you are about to do. Do not say "shipping now" or "committing now". Just call the tool.
-- When you have the SHA and content ready, call write_github_file in the same response. No confirmation step unless Matthew explicitly asks for one.
+- When Matthew approves a code change, call find_replace_github_file for edits or write_github_file for brand-new files IMMEDIATELY. Do not describe what you are about to do. Do not say "shipping now" or "committing now". Just call the tool.
+- When you have replacements (or new file content) ready, call the appropriate GitHub tool in the same response. No confirmation step unless Matthew explicitly asks for one.
 - After a successful write, confirm with the commit SHA and GitHub URL. One sentence. Done.
 - Never say "I'll now..." or "Let me..." before a tool call. Just call it.
 
@@ -173,6 +174,32 @@ const TOOLS = [
         sha:     { type: "string", description: "SHA of existing file — required for updates, omit for new files" }
       },
       required: ["owner", "repo", "path", "content", "message"]
+    }
+  },
+  {
+    name: "find_replace_github_file",
+    description: "Read a file from GitHub, apply find-and-replace changes, and write it back in one operation. Use this instead of write_github_file when making targeted changes to existing files. Much more reliable than reading and rewriting entire files.",
+    input_schema: {
+      type: "object",
+      properties: {
+        owner:   { type: "string" },
+        repo:    { type: "string" },
+        path:    { type: "string", description: "Full file path e.g. web/src/app/mission-control/page.tsx" },
+        replacements: {
+          type: "array",
+          description: "List of find/replace pairs to apply",
+          items: {
+            type: "object",
+            properties: {
+              find:    { type: "string" },
+              replace: { type: "string" }
+            },
+            required: ["find", "replace"]
+          }
+        },
+        message: { type: "string", description: "Git commit message" }
+      },
+      required: ["owner", "repo", "path", "replacements", "message"]
     }
   }
 ];
@@ -857,6 +884,11 @@ Request: "${userText}"` }] });
             return { type: "tool_result", tool_use_id: b.id, content: JSON.stringify(toolResult) };
           }
 
+          if (b.name === "find_replace_github_file") {
+            const toolResult = await callTool("github_find_replace", input);
+            return { type: "tool_result", tool_use_id: b.id, content: JSON.stringify(toolResult) };
+          }
+
           return { type: "tool_result", tool_use_id: b.id, content: JSON.stringify({ success: true }) };
         }));
         const assistantContent = Object.values(blocks).filter(Boolean).map(b =>
@@ -878,7 +910,7 @@ Request: "${userText}"` }] });
             system: buildSystemPrompt(),
             tools: TOOLS,
             tool_choice: forceToolUse && toolBlocks.some(b => b.name === "query_github")
-              ? { type:"tool", name:"write_github_file" }
+              ? { type:"tool", name:"find_replace_github_file" }
               : forceToolUse ? { type:"any" } : { type:"auto" },
             messages: [...apiMessages, { role:"assistant", content:assistantContent }, { role:"user", content:toolResults }],
           }),
@@ -960,6 +992,11 @@ Request: "${userText}"` }] });
               console.log("WRITE INPUT:", JSON.stringify({ ...input, content: input.content?.slice(0, 100) }));
               const toolResult = await callTool("github_write_file", input);
               console.log("WRITE RESULT:", JSON.stringify(toolResult));
+              return { type: "tool_result", tool_use_id: b.id, content: JSON.stringify(toolResult) };
+            }
+
+            if (b.name === "find_replace_github_file") {
+              const toolResult = await callTool("github_find_replace", input);
               return { type: "tool_result", tool_use_id: b.id, content: JSON.stringify(toolResult) };
             }
 
