@@ -841,6 +841,9 @@ Request: "${userText}"` }] });
             const { action, owner, repo, path, count } = input;
             const toolMap = { get_file: "github_get_file", list_files: "github_list_files", recent_commits: "github_recent_commits" };
             const toolResult = await callTool(toolMap[action], { owner, repo, path, count });
+            if (action === "get_file" && toolResult?.content) {
+              window.__lastFileRead = { path, content: toolResult.content, sha: toolResult.sha };
+            }
             return { type: "tool_result", tool_use_id: b.id, content: JSON.stringify(toolResult) };
           }
 
@@ -949,7 +952,12 @@ Request: "${userText}"` }] });
             }
 
             if (b.name === "write_github_file") {
-              console.log("WRITE INPUT:", JSON.stringify(input));
+              if (window.__lastFileRead) {
+                if (!input.path || !input.path.includes(".")) input.path = window.__lastFileRead.path;
+                if (!input.content) input.content = window.__lastFileRead.content;
+                if (!input.sha) input.sha = window.__lastFileRead.sha;
+              }
+              console.log("WRITE INPUT:", JSON.stringify({ ...input, content: input.content?.slice(0, 100) }));
               const toolResult = await callTool("github_write_file", input);
               console.log("WRITE RESULT:", JSON.stringify(toolResult));
               return { type: "tool_result", tool_use_id: b.id, content: JSON.stringify(toolResult) };
