@@ -149,7 +149,7 @@ const TOOLS = [
   },
   {
     name: "query_supabase",
-    description: "Query any Supabase table for live data. Tables: memories, ideas. For Closing Jet data use owner mbright4497.",
+    description: "Query Supabase tables for live data (including memories, ideas, credentials, projects, tasks).",
     input_schema: {
       type: "object",
       properties: {
@@ -205,6 +205,8 @@ const TOOLS = [
 ];
 
 const isEmailIntent = (text) => /\b(email|send|compose|write.*to|message.*to|draft)\b/i.test(text);
+const isOpsSupabaseIntent = (text) =>
+  /\b(credentials?|login|logins|password|token|api key|what'?s open|what is open|open tasks?|due today|due now|what'?s due)\b/i.test(text);
 
 const QUICK_ACTIONS = [
   { id: "email",        label: "Send Email",   icon: "✉", prompt: "Help me send an email. Ask me who it's to and what I need to say." },
@@ -233,7 +235,23 @@ Be sharp, direct, and protective of Matthew's runway.`,
   CMO:  `ACTIVE MODE: CMO — Focus on Facebook ads, HubLinkPro campaigns, positioning, hooks, copy, funnels, and GTM strategy. Think in conversion, not impressions. Every answer moves Matthew closer to his next paying customer.`,
   CTO:  `ACTIVE MODE: CTO — You are Matthew's Closing Jet TN engineering partner. Primary focus: shipping Closing Jet TN to a polished, sellable product. Stack: Next.js, Supabase, Vercel, GHL. You know the full product — Vera the AI TC, RF401 contract writer, document reader, closing packages, service providers, transaction management. When Matthew describes a feature or bug, write production-ready Next.js/Supabase code immediately. No scaffolding, no placeholders — real code that ships. Explain the WHY behind every decision. Secondary: JARVIS upgrades, MOAT development.`,
   MOAT: `ACTIVE MODE: MOAT — Focus on identifying dying apps with trapped paying users, scoring replacement opportunities, global market sizing, and AI-native build planning. Target: 3 MOAT apps per quarter, multi-language, 4B addressable market.`,
-  OPS:  `ACTIVE MODE: OPS — Focus on SOPs, daily briefings, client onboarding, task prioritization, and running four companies solo. Help Matthew operate like a team of 10. Systemize everything. Cut what doesn't matter.`,
+  OPS:  `ACTIVE MODE: OPS — You are Matthew's operations command center for documentation and task tracking.
+
+You have access to three Supabase tables through query_supabase:
+1. credentials — system IDs, logins, and tokens
+2. projects — active builds and project status
+3. tasks — open to-dos with status and due dates
+
+When requests mention credentials, logins, "what's open", "what's due today", task status, project status, or anything that requires live OPS data:
+- ALWAYS call query_supabase first (never guess from memory)
+- Map requests to the correct table:
+  - credential/login/token questions -> credentials
+  - active builds/project progress -> projects
+  - open tasks/due dates/priorities -> tasks
+- If needed, run multiple query_supabase calls and combine results
+- Return a concise operations answer with only relevant rows and an immediate next action
+
+Focus on SOPs, daily briefings, onboarding, prioritization, and helping Matthew run four companies solo with clean execution.`,
 };
 
 const AGENTS = [
@@ -807,7 +825,9 @@ Request: "${userText}"` }] });
     try {
       const apiMessages = newMessages.map(m=>({ role:m.role, content:m.content }));
       // Force tool use if message contains commit intent
-      const forceToolUse = /commit|write|fix|update|change|deploy/i.test(userText);
+      const forceGithubToolUse = /commit|write|fix|update|change|deploy/i.test(userText);
+      const forceOpsToolUse = activeAgent === "OPS" && isOpsSupabaseIntent(userText);
+      const forceToolUse = forceGithubToolUse || forceOpsToolUse;
       setMessages(prev => [...prev, { role:"assistant", content:"" }]);
       const res = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
@@ -922,9 +942,9 @@ Request: "${userText}"` }] });
             model: MODEL, max_tokens: 1000, stream: true,
             system: buildSystemPrompt(),
             tools: TOOLS,
-            tool_choice: forceToolUse && toolBlocks.some(b => b.name === "query_github")
+            tool_choice: forceGithubToolUse && toolBlocks.some(b => b.name === "query_github")
               ? { type:"tool", name:"find_replace_github_file" }
-              : forceToolUse ? { type:"any" } : { type:"auto" },
+              : forceGithubToolUse ? { type:"any" } : { type:"auto" },
             messages: [...apiMessages, { role:"assistant", content:assistantContent }, { role:"user", content:toolResults }],
           }),
         });
