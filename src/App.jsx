@@ -228,6 +228,111 @@ const TOOLS = [
 const TRIGGER_MAKE_TOOL = TOOLS[TOOLS.length - 1];
 const KNOCKKNOCK_TOOLS = [TRIGGER_MAKE_TOOL];
 
+/** KnockKnock / GHL command center UI palette */
+const KK = {
+  bg: "#0a0a0f",
+  surface: "#12121a",
+  border: "#2a2a3a",
+  primary: "#00d4ff",
+  success: "#00ff88",
+  warning: "#ffaa00",
+  danger: "#ff4466",
+  text: "#e0e0ee",
+  dim: "#8888aa",
+  accent: "#7b61ff",
+};
+
+const KK_PIPELINES = [
+  { id: "uzaovp4C8jMc29t6emre", name: "Seller_Home_EVAL", stages: 4, stageNames: ["New Lead", "Contacted", "Proposal Sent", "Closed"], primary: true },
+  { name: "Pre-Foreclosure Sellers 37601", stages: 9 },
+  { name: "Johnson City PreForeclosure", stages: 8 },
+  { name: "Absentee Owner Outreach 37601", stages: 8 },
+  { name: "General Marketing Pipeline", stages: 6 },
+  { name: "HubLinkPro Leads", stages: 5 },
+  { name: "RE Client Pipeline", stages: 6 },
+  { name: "Greeneville TN Fencing Pipeline", stages: 7 },
+  { name: "Archer's Pointe JC", stages: 5 },
+  { name: "Laura's 604 Lead", stages: 4 },
+  { name: "Laura's Land Listings", stages: 4 },
+];
+
+const KK_SCENARIOS = [
+  { name: "AI Seller Report", id: 4757115, status: "active", detail: "21 runs" },
+  { name: "Facebook Lead Ads", id: 4770156, status: "active", detail: "0 runs" },
+  { name: "Seller Follow-Up Day 1", id: 4770817, status: "active", detail: "wired" },
+  { name: "Agent Safety Net 48hr", id: 4770823, status: "active", detail: "wired" },
+  { name: "Daily Agent Summary", id: 4781045, status: "error", detail: "1 run" },
+  { name: "Pre-Foreclosure Campaign", id: 4805091, status: "active", detail: "1 run" },
+  { name: "Vera Inbound Email Loop", id: 4731277, status: "active", detail: "39 runs" },
+];
+
+const KK_MAKE_TOOLS = [
+  { id: 4805253, label: "create contact" },
+  { id: 4808055, label: "day 3 email" },
+  { id: 4808062, label: "day 7 email" },
+  { id: 4808067, label: "day 14 email" },
+  { id: 4808074, label: "add tag" },
+  { id: 4808160, label: "update email" },
+  { id: 4808643, label: "search contact" },
+  { id: 4808936, label: "commander" },
+  { id: 4809233, label: "get pipelines" },
+];
+
+const KK_AGENTS = [
+  { name: "Tasha Glasscock", phone: "(423) 277-2183", email: "tashawest@kw.com", ghl: "KfvUTmcRVmp0FSTLTgwZ", role: "Primary" },
+  { name: "Cory Smith", phone: "(423) 672-8179", email: "csmith@ihomehq.com", ghl: "bpW13lvxngMK91iJoLYo", role: "Secondary" },
+  { name: "Nate Wright", phone: "(423) 747-6175", email: "natewrightsellshomes@gmail.com", ghl: "luT7JPtoxLVchOq4xWtO", role: "Tertiary" },
+];
+
+const KK_WEBHOOKS = [
+  { label: "sell.ihomehq.com", url: "https://hook.us2.make.com/1fe4zs35slsov7sru88ibmvhiu2m223x" },
+  { label: "Pre-Foreclosure", url: "https://hook.us2.make.com/pqpo1cdlgb5djlhzvf6g58f8lwl4serw" },
+  { label: "Day 1 Follow-Up", url: "https://hook.us2.make.com/grswio42eygetm3cfo2fj5da8hx3xh72" },
+  { label: "48hr Safety Net", url: "https://hook.us2.make.com/qbw0rd093piufcn4q3u0jmjdv7mv7l72" },
+  { label: "Commander", url: "https://hook.us2.make.com/ilbhjtvw4ccrqb34iytufcjfsl1q8ww1" },
+  { label: "Executor", url: "https://hook.us2.make.com/50dvrgy8tllwooh533yk2bfzgitexzqb" },
+];
+
+const KK_CREDENTIALS = [
+  { k: "GHL Platform", v: "ai.hublinkpro.com" },
+  { k: "GHL Location ID", v: "pnRGATgdXDvvxcDOLMGa" },
+  { k: "A2P Number", v: "+1 (423) 427-2926" },
+  { k: "Make.com Team", v: "1838720" },
+  { k: "Make.com Org", v: "6465790" },
+  { k: "FB Business", v: "Bright LLC — 527802280345262" },
+  { k: "FB Ad Account", v: "382618662443106" },
+  { k: "FB Audience ID", v: "120246388680790013" },
+  { k: "Google Ads ID", v: "240-488-5796" },
+  { k: "Landing Page", v: "sell.ihomehq.com" },
+  { k: "JARVIS App", v: "jarvis-app-vk4e.vercel.app" },
+];
+
+const KK_CHANNELS = [
+  { name: "Vera VM", live: true },
+  { name: "AI SMS", live: true },
+  { name: "FB Ad", live: false },
+  { name: "Google Ads", live: false },
+  { name: "Email Drip", live: false },
+  { name: "sell.ihomehq.com", live: true },
+];
+
+const KK_ACTIONS = [
+  { title: "Build email drip in GHL", time: "15min", pri: "HIGH" },
+  { title: "Launch FB ad", time: "10min", pri: "HIGH" },
+  { title: "Meta Pixel install", time: "5min", pri: "MED" },
+  { title: "Google Ads CSV upload", time: "5min", pri: "MED" },
+  { title: "Google Ads rebrand", time: "15min", pri: "LOW" },
+  { title: "Debug Daily Agent Summary", time: "20min", pri: "LOW" },
+];
+
+const kkDaysUntil = (y, m0, d) => {
+  const end = new Date(y, m0, d);
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+  end.setHours(0, 0, 0, 0);
+  return Math.max(0, Math.ceil((end - start) / 86400000));
+};
+
 const KNOCKKNOCK_SYSTEM_PROMPT = `You are the KnockKnock Commander Agent inside JARVIS. You run Matt Bright's AI lead generation system for iHome Team at Keller Williams Kingsport TN.
 
 You have direct access to these tools via Make.com. When you need to use one, call the trigger_make_tool tool with the scenario ID and data.
@@ -718,6 +823,489 @@ Idea: "${name}" — ${description} (Category: ${category})`;
   return null;
 };
 
+const kkPriColor = (p) => (p === "HIGH" ? KK.danger : p === "MED" ? KK.warning : KK.dim);
+
+/** Tabbed GHL / Make ops dashboard shown when KnockKnock mode is on (lives in App.jsx). */
+function KnockKnockCommandCenter({ callMakeTrigger }) {
+  const [tab, setTab] = useState("dashboard");
+  const [contactQuery, setContactQuery] = useState("");
+  const [searchBusy, setSearchBusy] = useState(false);
+  const [searchResult, setSearchResult] = useState(null);
+  const [pushBusy, setPushBusy] = useState(false);
+  const [pushNote, setPushNote] = useState(null);
+  const [pushForm, setPushForm] = useState({
+    first_name: "",
+    last_name: "",
+    phone_1: "",
+    email: "",
+    property_address: "",
+    property_city: "",
+    property_zip: "",
+  });
+
+  const fbDays = kkDaysUntil(2026, 5, 15);
+
+  const runSearch = async () => {
+    const q = contactQuery.trim();
+    if (!q) return;
+    setSearchBusy(true);
+    setSearchResult(null);
+    try {
+      const res = await callMakeTrigger({ scenario_id: 4808643, data: { name: q } });
+      setSearchResult(res);
+    } catch (e) {
+      setSearchResult({ error: String(e?.message || e) });
+    }
+    setSearchBusy(false);
+  };
+
+  const runPush = async () => {
+    const { first_name, last_name, phone_1, email, property_address, property_city, property_zip } = pushForm;
+    if (!first_name.trim() || !last_name.trim() || !phone_1.trim() || !property_address.trim() || !property_city.trim() || !property_zip.trim()) {
+      setPushNote({ err: "first_name, last_name, phone_1, address, city, and zip are required." });
+      return;
+    }
+    setPushBusy(true);
+    setPushNote(null);
+    try {
+      const data = {
+        first_name: first_name.trim(),
+        last_name: last_name.trim(),
+        phone_1: phone_1.trim(),
+        property_address: property_address.trim(),
+        property_city: property_city.trim(),
+        property_zip: property_zip.trim(),
+      };
+      const em = email.trim();
+      if (em) data.email = em;
+      const res = await callMakeTrigger({ scenario_id: 4805253, data });
+      setPushNote({ ok: true, res });
+    } catch (e) {
+      setPushNote({ err: String(e?.message || e) });
+    }
+    setPushBusy(false);
+  };
+
+  const tabs = [
+    { id: "dashboard", label: "Dashboard" },
+    { id: "contacts", label: "Contacts" },
+    { id: "pipelines", label: "Pipelines" },
+    { id: "scenarios", label: "Scenarios" },
+    { id: "agents", label: "Agents" },
+    { id: "webhooks", label: "Webhooks" },
+    { id: "credentials", label: "Credentials" },
+  ];
+
+  const card = { background: KK.surface, border: `1px solid ${KK.border}`, borderRadius: 10, padding: "10px 12px" };
+
+  return (
+    <div style={{ background: KK.bg, borderBottom: `1px solid ${KK.border}`, flexShrink: 0, display: "flex", flexDirection: "column", maxHeight: "min(58vh, 560px)" }}>
+      <div style={{ display: "flex", gap: 4, overflowX: "auto", padding: "8px 10px 0", borderBottom: `1px solid ${KK.border}` }}>
+        {tabs.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            onClick={() => setTab(t.id)}
+            style={{
+              padding: "8px 12px",
+              background: tab === t.id ? `${KK.primary}22` : "transparent",
+              border: tab === t.id ? `1px solid ${KK.primary}` : `1px solid ${KK.border}`,
+              borderBottom: "none",
+              borderRadius: "8px 8px 0 0",
+              color: tab === t.id ? KK.primary : KK.dim,
+              fontSize: 11,
+              fontFamily: "'DM Mono', monospace",
+              letterSpacing: "0.06em",
+              cursor: "pointer",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+      <div style={{ flex: 1, overflowY: "auto", padding: 12 }}>
+        {tab === "dashboard" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div
+              style={{
+                ...card,
+                borderColor: KK.warning,
+                background: `${KK.warning}12`,
+                color: KK.text,
+                fontSize: 12,
+                lineHeight: 1.5,
+              }}
+            >
+              <span style={{ color: KK.warning, fontWeight: 600 }}>Facebook Connection Expires in {fbDays} Days</span>
+              {" — "}Renew before June 15, 2026 in Make.com → Connections
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: 8 }}>
+              {[
+                { k: "Contacts in GHL", v: "76" },
+                { k: "Vera VMs Dropped", v: "76" },
+                { k: "Callbacks", v: "1" },
+                { k: "FB Audience Size", v: "76" },
+              ].map((x) => (
+                <div key={x.k} style={{ ...card, textAlign: "center" }}>
+                  <div style={{ fontSize: 20, fontWeight: 700, color: KK.primary, fontFamily: "'DM Mono', monospace" }}>{x.v}</div>
+                  <div style={{ fontSize: 10, color: KK.dim, marginTop: 4 }}>{x.k}</div>
+                </div>
+              ))}
+            </div>
+            <div style={{ ...card }}>
+              <div style={{ fontSize: 10, color: KK.accent, letterSpacing: "0.1em", marginBottom: 8, fontFamily: "'DM Mono', monospace" }}>CHANNEL STATUS</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {KK_CHANNELS.map((ch) => (
+                  <div key={ch.name} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: KK.text }}>
+                    <span
+                      style={{
+                        width: 8,
+                        height: 8,
+                        borderRadius: "50%",
+                        background: ch.live ? KK.success : KK.danger,
+                        boxShadow: ch.live ? `0 0 6px ${KK.success}88` : `0 0 6px ${KK.danger}88`,
+                      }}
+                    />
+                    <span style={{ flex: 1 }}>{ch.name}</span>
+                    <span style={{ color: ch.live ? KK.success : KK.danger, fontSize: 10, fontFamily: "'DM Mono', monospace" }}>{ch.live ? "active" : "NOT LIVE"}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div style={{ ...card }}>
+              <div style={{ fontSize: 10, color: KK.accent, letterSpacing: "0.1em", marginBottom: 8, fontFamily: "'DM Mono', monospace" }}>ACTION ITEMS</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {KK_ACTIONS.map((a) => (
+                  <div
+                    key={a.title}
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      gap: 8,
+                      padding: "8px 10px",
+                      background: `${KK.bg}`,
+                      borderRadius: 8,
+                      border: `1px solid ${KK.border}`,
+                    }}
+                  >
+                    <span style={{ fontSize: 12, color: KK.text }}>{a.title}</span>
+                    <span style={{ fontSize: 10, color: KK.dim, fontFamily: "'DM Mono', monospace" }}>{a.time}</span>
+                    <span style={{ fontSize: 10, fontWeight: 600, color: kkPriColor(a.pri), fontFamily: "'DM Mono', monospace" }}>{a.pri}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {tab === "contacts" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            <div style={{ ...card }}>
+              <div style={{ fontSize: 10, color: KK.primary, marginBottom: 8, fontFamily: "'DM Mono', monospace" }}>SEARCH CONTACT (4808643)</div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <input
+                  value={contactQuery}
+                  onChange={(e) => setContactQuery(e.target.value)}
+                  placeholder="Name to search"
+                  style={{
+                    flex: 1,
+                    minWidth: 160,
+                    padding: "8px 10px",
+                    borderRadius: 8,
+                    border: `1px solid ${KK.border}`,
+                    background: KK.bg,
+                    color: KK.text,
+                    fontSize: 13,
+                  }}
+                />
+                <button
+                  type="button"
+                  disabled={searchBusy || !contactQuery.trim()}
+                  onClick={runSearch}
+                  style={{
+                    padding: "8px 14px",
+                    borderRadius: 8,
+                    border: `1px solid ${KK.primary}`,
+                    background: `${KK.primary}22`,
+                    color: KK.primary,
+                    cursor: searchBusy ? "wait" : "pointer",
+                    fontSize: 12,
+                    fontFamily: "'DM Mono', monospace",
+                  }}
+                >
+                  {searchBusy ? "…" : "Search"}
+                </button>
+              </div>
+              {searchResult != null && (
+                <pre
+                  style={{
+                    marginTop: 10,
+                    fontSize: 11,
+                    color: KK.dim,
+                    background: KK.bg,
+                    padding: 10,
+                    borderRadius: 8,
+                    overflow: "auto",
+                    maxHeight: 200,
+                    border: `1px solid ${KK.border}`,
+                  }}
+                >
+                  {JSON.stringify(searchResult, null, 2)}
+                </pre>
+              )}
+            </div>
+            <div style={{ ...card }}>
+              <div style={{ fontSize: 10, color: KK.primary, marginBottom: 8, fontFamily: "'DM Mono', monospace" }}>PUSH CONTACT (4805253)</div>
+              <div style={{ fontSize: 10, color: KK.dim, marginBottom: 10, lineHeight: 1.5 }}>
+                Auto-tags: pre-foreclosure, batchleads-source, tri-cities-tn, vera-voicemail-pending
+              </div>
+              {["first_name", "last_name", "phone_1", "email", "property_address", "property_city", "property_zip"].map((field) => (
+                <div key={field} style={{ marginBottom: 8 }}>
+                  <div style={{ fontSize: 9, color: KK.dim, marginBottom: 4, fontFamily: "'DM Mono', monospace" }}>{field.replace(/_/g, " ")}</div>
+                  <input
+                    value={pushForm[field]}
+                    onChange={(e) => setPushForm((p) => ({ ...p, [field]: e.target.value }))}
+                    placeholder={field === "email" ? "optional" : ""}
+                    style={{
+                      width: "100%",
+                      padding: "8px 10px",
+                      borderRadius: 8,
+                      border: `1px solid ${KK.border}`,
+                      background: KK.bg,
+                      color: KK.text,
+                      fontSize: 13,
+                      boxSizing: "border-box",
+                    }}
+                  />
+                </div>
+              ))}
+              <button
+                type="button"
+                disabled={pushBusy}
+                onClick={runPush}
+                style={{
+                  marginTop: 8,
+                  padding: "10px 14px",
+                  borderRadius: 8,
+                  border: `1px solid ${KK.success}`,
+                  background: `${KK.success}18`,
+                  color: KK.success,
+                  cursor: pushBusy ? "wait" : "pointer",
+                  fontSize: 12,
+                  fontFamily: "'DM Mono', monospace",
+                  width: "100%",
+                }}
+              >
+                {pushBusy ? "Pushing…" : "Push to GHL"}
+              </button>
+              {pushNote?.err && <div style={{ marginTop: 8, fontSize: 12, color: KK.danger }}>{pushNote.err}</div>}
+              {pushNote?.ok && (
+                <pre
+                  style={{
+                    marginTop: 8,
+                    fontSize: 11,
+                    color: KK.dim,
+                    background: KK.bg,
+                    padding: 10,
+                    borderRadius: 8,
+                    overflow: "auto",
+                    border: `1px solid ${KK.border}`,
+                  }}
+                >
+                  {JSON.stringify(pushNote.res, null, 2)}
+                </pre>
+              )}
+            </div>
+          </div>
+        )}
+
+        {tab === "pipelines" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {KK_PIPELINES.map((p, i) => (
+              <div
+                key={i}
+                style={{
+                  ...card,
+                  borderColor: p.primary ? KK.accent : KK.border,
+                  borderLeftWidth: p.primary ? 3 : 1,
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, flexWrap: "wrap" }}>
+                  <div>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: KK.text }}>
+                      {i + 1}. {p.name}
+                    </span>
+                    {p.id && (
+                      <span style={{ fontSize: 10, color: KK.dim, fontFamily: "'DM Mono', monospace", marginLeft: 6 }}>
+                        ({p.id})
+                      </span>
+                    )}
+                    {p.primary && (
+                      <span
+                        style={{
+                          marginLeft: 8,
+                          fontSize: 9,
+                          padding: "2px 6px",
+                          borderRadius: 4,
+                          background: `${KK.accent}33`,
+                          color: KK.accent,
+                          fontFamily: "'DM Mono', monospace",
+                        }}
+                      >
+                        PRIMARY
+                      </span>
+                    )}
+                  </div>
+                  <span style={{ fontSize: 11, color: KK.primary, fontFamily: "'DM Mono', monospace" }}>{p.stages} stages</span>
+                </div>
+                {p.stageNames && (
+                  <div style={{ fontSize: 11, color: KK.dim, marginTop: 8, lineHeight: 1.5 }}>Stages: {p.stageNames.join(" → ")}</div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {tab === "scenarios" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ ...card }}>
+              <div style={{ fontSize: 10, color: KK.accent, marginBottom: 10, fontFamily: "'DM Mono', monospace" }}>SCENARIOS</div>
+              {KK_SCENARIOS.map((s) => (
+                <div
+                  key={s.id}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    padding: "8px 0",
+                    borderBottom: `1px solid ${KK.border}`,
+                    fontSize: 12,
+                  }}
+                >
+                  <span
+                    style={{
+                      width: 8,
+                      height: 8,
+                      borderRadius: "50%",
+                      background: s.status === "error" ? KK.danger : KK.success,
+                      flexShrink: 0,
+                    }}
+                  />
+                  <span style={{ flex: 1, color: KK.text }}>
+                    {s.name} <span style={{ color: KK.dim }}>({s.id})</span>
+                  </span>
+                  <span style={{ fontSize: 10, color: s.status === "error" ? KK.danger : KK.success, fontFamily: "'DM Mono', monospace" }}>
+                    {s.status}
+                  </span>
+                  <span style={{ fontSize: 10, color: KK.dim, fontFamily: "'DM Mono', monospace" }}>{s.detail}</span>
+                </div>
+              ))}
+            </div>
+            <div style={{ ...card }}>
+              <div style={{ fontSize: 10, color: KK.accent, marginBottom: 10, fontFamily: "'DM Mono', monospace" }}>MAKE TOOLS</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 8 }}>
+                {KK_MAKE_TOOLS.map((t) => (
+                  <div
+                    key={t.id}
+                    style={{
+                      padding: "8px 10px",
+                      borderRadius: 8,
+                      border: `1px solid ${KK.border}`,
+                      background: KK.bg,
+                      fontSize: 11,
+                      color: KK.text,
+                    }}
+                  >
+                    <div style={{ fontFamily: "'DM Mono', monospace", color: KK.primary }}>{t.id}</div>
+                    <div style={{ color: KK.dim, marginTop: 4 }}>{t.label}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {tab === "agents" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div
+              style={{
+                ...card,
+                fontSize: 12,
+                color: KK.warning,
+                borderColor: KK.warning,
+                background: `${KK.warning}10`,
+              }}
+            >
+              Call routing order: <strong style={{ color: KK.text }}>Tasha → Cory → Nate → Vera AI</strong> (last resort only)
+            </div>
+            {KK_AGENTS.map((a) => (
+              <div key={a.ghl} style={{ ...card }}>
+                <div style={{ fontSize: 14, fontWeight: 600, color: KK.text }}>{a.name}</div>
+                <div style={{ fontSize: 12, color: KK.dim, marginTop: 6 }}>{a.phone}</div>
+                <div style={{ fontSize: 12, color: KK.primary, marginTop: 4 }}>{a.email}</div>
+                <div style={{ fontSize: 11, color: KK.dim, marginTop: 6, fontFamily: "'DM Mono', monospace" }}>
+                  GHL: {a.ghl}
+                </div>
+                <div style={{ fontSize: 10, color: KK.accent, marginTop: 8, fontFamily: "'DM Mono', monospace" }}>{a.role}</div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {tab === "webhooks" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {KK_WEBHOOKS.map((w) => (
+              <div key={w.url} style={{ ...card }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: KK.text, marginBottom: 6 }}>{w.label}</div>
+                <div
+                  style={{
+                    fontSize: 10,
+                    color: KK.dim,
+                    wordBreak: "break-all",
+                    fontFamily: "'DM Mono', monospace",
+                    lineHeight: 1.5,
+                  }}
+                >
+                  {w.url}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {tab === "credentials" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div
+              style={{
+                ...card,
+                borderColor: KK.danger,
+                background: `${KK.danger}10`,
+                color: KK.text,
+                fontSize: 12,
+                lineHeight: 1.6,
+              }}
+            >
+              <div style={{ fontWeight: 600, color: KK.danger, marginBottom: 6 }}>TREC compliance</div>
+              All comms must include: iHome Team | Keller Williams Kingsport, 2 Sheridan Square, Kingsport TN 37660, 423-247-5510. NEVER use: foreclosure,
+              behind on payments, financial trouble, distressed
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", gap: 8 }}>
+              {KK_CREDENTIALS.map((c) => (
+                <div key={c.k} style={{ ...card }}>
+                  <div style={{ fontSize: 9, color: KK.dim, fontFamily: "'DM Mono', monospace", marginBottom: 4 }}>{c.k}</div>
+                  <div style={{ fontSize: 12, color: KK.text, wordBreak: "break-word" }}>{c.v}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 const VoiceVisualizer = ({ analyserRef }) => {
   const canvasRef = useRef(null);
   useEffect(() => {
@@ -808,6 +1396,8 @@ export default function App() {
   const [activeTools,  setActiveTools]  = useState([]);
   const [activeTab,    setActiveTab]    = useState("chat"); // "chat" | "ideas"
   const [activeAgent,  setActiveAgent]  = useState(null);
+  /** When KnockKnock mode is on: "dashboard" shows ops panel above chat; "chat" hides the panel. */
+  const [knockKnockUiMode, setKnockKnockUiMode] = useState("dashboard");
   const [isListening,  setIsListening]  = useState(false);
   const [voiceEnabled, setVoiceEnabled] = useState(true);
   const [isSpeaking,   setIsSpeaking]   = useState(false);
@@ -1405,12 +1995,53 @@ Request: "${userText}"` }] });
         </div>
       )}
 
+      {activeTab === "chat" && activeAgent === "knockknock" && (
+        <div
+          style={{
+            padding: "6px 12px",
+            borderBottom: `1px solid ${KK.border}`,
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            flexShrink: 0,
+            background: KK.bg,
+            flexWrap: "wrap",
+          }}
+        >
+          <span style={{ fontSize: 9, color: KK.dim, fontFamily: "'DM Mono', monospace", letterSpacing: "0.06em" }}>VIEW</span>
+          {["dashboard", "chat"].map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              onClick={() => setKnockKnockUiMode(mode)}
+              style={{
+                padding: "4px 12px",
+                borderRadius: 20,
+                border: `1px solid ${knockKnockUiMode === mode ? KK.primary : KK.border}`,
+                background: knockKnockUiMode === mode ? `${KK.primary}22` : KK.surface,
+                color: knockKnockUiMode === mode ? KK.primary : KK.dim,
+                fontSize: 11,
+                cursor: "pointer",
+                fontFamily: "'DM Mono', monospace",
+                letterSpacing: "0.05em",
+              }}
+            >
+              {mode === "dashboard" ? "Dashboard" : "Chat"}
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* ── Body ── */}
       <div style={{flex:1,display:"flex",position:"relative",overflow:"hidden"}}>
 
         {/* Chat view */}
         {activeTab === "chat" && (
-          <div style={{flex:1,overflowY:"auto",padding:"12px 14px",display:"flex",flexDirection:"column",gap:10}}>
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, overflow: "hidden" }}>
+            {activeAgent === "knockknock" && knockKnockUiMode === "dashboard" && (
+              <KnockKnockCommandCenter callMakeTrigger={callMakeTrigger} />
+            )}
+            <div style={{ flex: 1, overflowY: "auto", padding: "12px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
             {messages.map((m,i)=>(
               <div key={i} style={{animation:"fadeIn 0.25s ease"}}>
                 <div style={{display:"flex",justifyContent:m.role==="user"?"flex-end":"flex-start"}}>
@@ -1443,6 +2074,7 @@ Request: "${userText}"` }] });
               </div>
             )}
             <div ref={bottomRef}/>
+          </div>
           </div>
         )}
 
