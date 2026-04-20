@@ -4,6 +4,112 @@ const GHL_WEBHOOK = "https://services.leadconnectorhq.com/hooks/D1dTmgY5G8SuVs91
 const ANTHROPIC_KEY = import.meta.env.VITE_ANTHROPIC_KEY;
 const MODEL = "claude-sonnet-4-6";
 
+/** GoHighLevel remote MCP — requires beta header + mcp_toolset per Anthropic MCP connector docs */
+const GHL_MCP_TOOLSET = { type: "mcp_toolset", mcp_server_name: "ghl-mcp" };
+
+const anthropicHeadersWithMcp = {
+  "Content-Type": "application/json",
+  "x-api-key": ANTHROPIC_KEY,
+  "anthropic-version": "2023-06-01",
+  "anthropic-dangerous-direct-browser-access": "true",
+  "anthropic-beta": "mcp-client-2025-11-20",
+};
+
+/** Merge GHL MCP into every Messages API request (servers + toolset). */
+const anthropicBodyWithGhlMcp = (body) => {
+  const mcp_servers = [
+    {
+      type: "url",
+      url: "https://services.leadconnectorhq.com/mcp/",
+      name: "ghl-mcp",
+      authorization_token: import.meta.env.VITE_GHL_PIT,
+    },
+  ];
+  const tools = Array.isArray(body.tools) ? [...body.tools, GHL_MCP_TOOLSET] : [GHL_MCP_TOOLSET];
+  return { ...body, mcp_servers, tools };
+};
+
+/** Non-streaming responses: text blocks + parsed MCP tool results */
+const parseClaudeMessageContent = (data) => {
+  const content = data?.content || [];
+  const textParts = content.filter((item) => item.type === "text").map((item) => item.text);
+  const mcpToolResults = content
+    .filter((item) => item.type === "mcp_tool_result")
+    .map((item) => {
+      try {
+        return JSON.parse(item.content?.[0]?.text || "{}");
+      } catch {
+        return item.content?.[0]?.text || "";
+      }
+    });
+  const displayText = textParts.join("\n");
+  return { displayText, mcpToolResults, textParts };
+};
+
+const streamTextFromBlocks = (blkMap) =>
+  Object.values(blkMap || {})
+    .filter((b) => b?.type === "text")
+    .map((b) => b.text || "")
+    .join("");
+
+const streamMcpResultTail = (blkMap) => {
+  const rows = Object.values(blkMap || {})
+    .filter((b) => b?.type === "mcp_tool_result" && b.summary)
+    .map((b) => b.summary);
+  if (!rows.length) return "";
+  return `--- GHL (MCP) ---\n${rows.join("\n\n")}`;
+};
+
+const blocksSortedEntries = (blkMap) =>
+  Object.keys(blkMap || {})
+    .map((k) => Number(k))
+    .sort((a, b) => a - b)
+    .map((i) => blkMap[i])
+    .filter(Boolean);
+
+/** Replay assistant message to the API after a stream (text, client tools, MCP blocks). */
+const buildAssistantContentFromBlocks = (blkMap, parsedToolUses) =>
+  blocksSortedEntries(blkMap)
+    .map((b) => {
+      if (b.type === "text") return { type: "text", text: b.text || "." };
+      if (b.type === "tool_use") {
+        return {
+          type: "tool_use",
+          id: b.id,
+          name: b.name,
+          input: parsedToolUses.find((p) => p.id === b.id)?.input || {},
+        };
+      }
+      if (b.type === "mcp_tool_use") {
+        let input = {};
+        try {
+          input = JSON.parse(b.inputStr || "{}");
+        } catch {
+          input = {};
+        }
+        return {
+          type: "mcp_tool_use",
+          id: b.id,
+          name: b.name,
+          server_name: b.server_name || "ghl-mcp",
+          input,
+        };
+      }
+      if (b.type === "mcp_tool_result") {
+        return {
+          type: "mcp_tool_result",
+          tool_use_id: b.tool_use_id,
+          is_error: !!b.is_error,
+          content:
+            Array.isArray(b.content) && b.content.length
+              ? b.content
+              : [{ type: "text", text: b.summary || "" }],
+        };
+      }
+      return null;
+    })
+    .filter(Boolean);
+
 const SUPABASE_URL = "https://gpbuqpwusztorbwxxkka.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdwYnVxcHd1c3p0b3Jid3h4a2thIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU4MjMxMDcsImV4cCI6MjA5MTM5OTEwN30._EvUhea4Y2e2DqmFxxRwkzx5UkyaGC5rkuphMU7cmhw";
 const JARVIS_TOOLS_URL = "https://gpbuqpwusztorbwxxkka.supabase.co/functions/v1/jarvis-tools";
@@ -99,7 +205,59 @@ EMAIL RULES — NON-NEGOTIABLE:
 - Required: first_name, last_name, email, subject, greeting, body. If email address is missing, ask once. Then call the tool.
 - greeting MUST be exactly: Hi [first_name], with their real first name (plain text). body = main message only (2–3 sentences); no greeting, no sign-off — GHL adds the signature.
 - After calling send_email, confirm briefly: "Email queued — hit Send via GHL to fire it."
-- Do NOT explain the tool. Do NOT say it is unavailable. It is available. Call it.`;
+- Do NOT explain the tool. Do NOT say it is unavailable. It is available. Call it.
+
+You have access to GoHighLevel CRM via MCP. The location ID is pnRGATgdXDvvxcDOLMGa.
+
+Available GHL tools:
+- contacts_get-contacts: Search/list contacts
+- contacts_get-contact: Get contact by ID
+- contacts_create-contact: Create new contact
+- contacts_update-contact: Update contact fields
+- contacts_upsert-contact: Create or update contact
+- contacts_add-tags: Add tags to contact
+- contacts_remove-tags: Remove tags from contact
+- contacts_get-all-tasks: Get tasks for a contact
+- conversations_search-conversation: Search conversations
+- conversations_get-messages: Get messages in a conversation
+- conversations_send-a-new-message: Send SMS or email
+- opportunities_search-opportunity: Search pipeline deals
+- opportunities_get-pipelines: List all pipelines
+- opportunities_get-opportunity: Get opportunity by ID
+- opportunities_update-opportunity: Update a deal
+- calendars_get-calendar-events: Get calendar events
+- calendars_get-appointment-notes: Get appointment notes
+- locations_get-location: Get sub-account details
+- locations_get-custom-fields: Get custom field definitions
+- payments_get-order-by-id: Get order details
+- payments_list-transactions: List payment transactions
+- social-media-posting_create-post: Create social media post
+- social-media-posting_edit-post: Edit social media post
+- social-media-posting_get-post: Get post details
+- social-media-posting_get-posts: List posts
+- social-media-posting_get-account: Get connected accounts
+- social-media-posting_get-social-media-statistics: Get analytics
+- blogs_create-blog-post: Create blog post
+- blogs_update-blog-post: Update blog post
+- blogs_get-blog-post: Get blog posts
+- blogs_get-blogs: List blog sites
+- blogs_get-all-blog-authors-by-location: Get authors
+- blogs_get-all-categories-by-location: Get categories
+- blogs_check-url-slug-exists: Check slug availability
+- emails_fetch-template: Get email templates
+- emails_create-template: Create email template
+
+When using contact tools, always include locationId: "pnRGATgdXDvvxcDOLMGa" in the request.
+When creating contacts, never pass empty string for email — omit it entirely if blank.
+
+Pipeline reference:
+- Seller_Home_EVAL pipeline ID: uzaovp4C8jMc29t6emre
+- New Lead stage ID: 0db04072-dd2e-4b98-9bd2-cef66851c75c
+
+Agents for assignment:
+- Tasha Glasscock: KfvUTmcRVmp0FSTLTgwZ
+- Cory Smith: bpW13lvxngMK91iJoLYo
+- Nate Wright: luT7JPtoxLVchOq4xWtO`;
 
 const EXTRACT_PROMPT = `Extract key business facts from this message. Return ONLY valid JSON:
 {"hasNewFacts":true/false,"facts":[{"key":"short_key","value":"fact","category":"revenue|clients|products|team|decisions|goals|other"}]}
@@ -384,6 +542,58 @@ COMMANDS MATT MIGHT USE:
 - "tag [name] [tagname]" → search first, then use tool 4808074
 - "status" → report what's built, what's live, what needs to happen next
 - "run drip" → iterate through contacts and send appropriate emails based on timing
+
+You have access to GoHighLevel CRM via MCP. The location ID is pnRGATgdXDvvxcDOLMGa.
+
+Available GHL tools:
+- contacts_get-contacts: Search/list contacts
+- contacts_get-contact: Get contact by ID
+- contacts_create-contact: Create new contact
+- contacts_update-contact: Update contact fields
+- contacts_upsert-contact: Create or update contact
+- contacts_add-tags: Add tags to contact
+- contacts_remove-tags: Remove tags from contact
+- contacts_get-all-tasks: Get tasks for a contact
+- conversations_search-conversation: Search conversations
+- conversations_get-messages: Get messages in a conversation
+- conversations_send-a-new-message: Send SMS or email
+- opportunities_search-opportunity: Search pipeline deals
+- opportunities_get-pipelines: List all pipelines
+- opportunities_get-opportunity: Get opportunity by ID
+- opportunities_update-opportunity: Update a deal
+- calendars_get-calendar-events: Get calendar events
+- calendars_get-appointment-notes: Get appointment notes
+- locations_get-location: Get sub-account details
+- locations_get-custom-fields: Get custom field definitions
+- payments_get-order-by-id: Get order details
+- payments_list-transactions: List payment transactions
+- social-media-posting_create-post: Create social media post
+- social-media-posting_edit-post: Edit social media post
+- social-media-posting_get-post: Get post details
+- social-media-posting_get-posts: List posts
+- social-media-posting_get-account: Get connected accounts
+- social-media-posting_get-social-media-statistics: Get analytics
+- blogs_create-blog-post: Create blog post
+- blogs_update-blog-post: Update blog post
+- blogs_get-blog-post: Get blog posts
+- blogs_get-blogs: List blog sites
+- blogs_get-all-blog-authors-by-location: Get authors
+- blogs_get-all-categories-by-location: Get categories
+- blogs_check-url-slug-exists: Check slug availability
+- emails_fetch-template: Get email templates
+- emails_create-template: Create email template
+
+When using contact tools, always include locationId: "pnRGATgdXDvvxcDOLMGa" in the request.
+When creating contacts, never pass empty string for email — omit it entirely if blank.
+
+Pipeline reference:
+- Seller_Home_EVAL pipeline ID: uzaovp4C8jMc29t6emre
+- New Lead stage ID: 0db04072-dd2e-4b98-9bd2-cef66851c75c
+
+Agents for assignment:
+- Tasha Glasscock: KfvUTmcRVmp0FSTLTgwZ
+- Cory Smith: bpW13lvxngMK91iJoLYo
+- Nate Wright: luT7JPtoxLVchOq4xWtO
 `;
 
 const isEmailIntent = (text) => /\b(email|send|compose|write.*to|message.*to|draft)\b/i.test(text);
@@ -453,11 +663,12 @@ const storage = {
   set: (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)); } catch { /* quota or private mode */ } },
 };
 
-const callClaude = (body) => fetch("https://api.anthropic.com/v1/messages", {
-  method: "POST",
-  headers: { "Content-Type": "application/json", "x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
-  body: JSON.stringify(body)
-}).then(r => r.json());
+const callClaude = (body) =>
+  fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: anthropicHeadersWithMcp,
+    body: JSON.stringify(anthropicBodyWithGhlMcp(body)),
+  }).then((r) => r.json());
 
 const callTool = async (tool, params = {}) => {
   const res = await fetch(JARVIS_TOOLS_URL, {
@@ -637,7 +848,8 @@ Score this idea. Return ONLY valid JSON, no markdown:
 Idea: "${name}" — ${description} (Category: ${category})`;
 
     const data = await callClaude({ model:MODEL, max_tokens:500, messages:[{ role:"user", content:prompt }] });
-    const raw = data.content?.map(b=>b.text||"").join("").replace(/```json|```/g,"").trim();
+    const { displayText: scoreDisplay } = parseClaudeMessageContent(data);
+    const raw = scoreDisplay.replace(/```json|```/g,"").trim();
     return JSON.parse(raw);
   };
 
@@ -1579,7 +1791,8 @@ export default function App() {
     try {
       const data = await callClaude({ model:MODEL, max_tokens:400,
         messages:[{ role:"user", content:`${EXTRACT_PROMPT}\n\nMessage: "${msg}"` }] });
-      const parsed = JSON.parse(data.content?.map(b=>b.text||"").join("").replace(/```json|```/g,"").trim());
+      const { displayText } = parseClaudeMessageContent(data);
+      const parsed = JSON.parse(displayText.replace(/```json|```/g,"").trim());
       if (parsed.hasNewFacts && parsed.facts?.length > 0) {
         // Upsert each fact to Supabase
         for (const f of parsed.facts) {
@@ -1614,7 +1827,8 @@ Extract fields and return ONLY valid JSON — no other text:
 {"first_name":"","last_name":"","email":"","subject":"","greeting":"Hi [first_name],","body":"[main message 2-3 sentences]","missing_email":false}
 If no email address provided, set missing_email:true.
 Request: "${userText}"` }] });
-      const raw = data.content?.map(b=>b.text||"").join("").replace(/```json|```/g,"").trim();
+      const { displayText: composeDisplay } = parseClaudeMessageContent(data);
+      const raw = composeDisplay.replace(/```json|```/g,"").trim();
       const parsed = JSON.parse(raw);
       parsed.body = parsed.body.replace(/best regards[\s\S]*/gi, '').trim();
       setActiveTools([{ name:"send_email", status:"done" }]);
@@ -1655,18 +1869,18 @@ Request: "${userText}"` }] });
       setMessages(prev => [...prev, { role:"assistant", content:"" }]);
       const res = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": ANTHROPIC_KEY,
-          "anthropic-version": "2023-06-01",
-          "anthropic-dangerous-direct-browser-access": "true",
-        },
-        body: JSON.stringify({
-          model: MODEL, max_tokens: 1000, stream: true,
-          system: buildSystemPrompt(),
-          tools: toolsForRequest, tool_choice: forceToolUse ? { type:"any" } : { type:"auto" },
-          messages: apiMessages,
-        }),
+        headers: anthropicHeadersWithMcp,
+        body: JSON.stringify(
+          anthropicBodyWithGhlMcp({
+            model: MODEL,
+            max_tokens: 1000,
+            stream: true,
+            system: buildSystemPrompt(),
+            tools: toolsForRequest,
+            tool_choice: forceToolUse ? { type: "any" } : { type: "auto" },
+            messages: apiMessages,
+          }),
+        ),
       });
       if (!res.ok) throw new Error(`API ${res.status}`);
       const reader = res.body.getReader();
@@ -1687,28 +1901,76 @@ Request: "${userText}"` }] });
             if (ev.type === "content_block_start") {
               const cb = ev.content_block;
               console.log("BLOCK START:", cb.type, cb.name || "");
-              blocks[ev.index] = cb.type === "tool_use"
-                ? { type:"tool_use", id:cb.id, name:cb.name, inputStr:"" }
-                : { type:"text", text:"" };
-              if (cb.type === "tool_use") setActiveTools(prev => [...prev, { name:cb.name, status:"running" }]);
+              if (cb.type === "tool_use") {
+                blocks[ev.index] = { type: "tool_use", id: cb.id, name: cb.name, inputStr: "" };
+                setActiveTools((prev) => [...prev, { name: cb.name, status: "running" }]);
+              } else if (cb.type === "mcp_tool_use") {
+                const seed =
+                  cb.input != null ? (typeof cb.input === "string" ? cb.input : JSON.stringify(cb.input)) : "";
+                blocks[ev.index] = {
+                  type: "mcp_tool_use",
+                  id: cb.id,
+                  name: cb.name,
+                  server_name: cb.server_name || "ghl-mcp",
+                  inputStr: seed || "",
+                };
+                setActiveTools((prev) => [...prev, { name: `ghl:${cb.name}`, status: "running" }]);
+              } else if (cb.type === "mcp_tool_result") {
+                let summary = "";
+                try {
+                  summary = JSON.stringify(JSON.parse(cb.content?.[0]?.text || "{}"), null, 2);
+                } catch {
+                  summary = cb.content?.[0]?.text || "";
+                }
+                blocks[ev.index] = {
+                  type: "mcp_tool_result",
+                  tool_use_id: cb.tool_use_id,
+                  is_error: cb.is_error,
+                  content: cb.content,
+                  summary,
+                };
+              } else {
+                blocks[ev.index] = { type: "text", text: "" };
+              }
             }
             if (ev.type === "content_block_delta") {
               const b = blocks[ev.index];
               if (!b) continue;
               if (ev.delta.type === "text_delta") {
+                if (b.type !== "text") continue;
                 b.text += ev.delta.text;
                 const snap = b.text;
-                setMessages(prev => { const u=[...prev]; u[u.length-1]={ role:"assistant", content:snap }; return u; });
+                setMessages((prev) => {
+                  const u = [...prev];
+                  u[u.length - 1] = { role: "assistant", content: snap };
+                  return u;
+                });
               }
-              if (ev.delta.type === "input_json_delta") b.inputStr += ev.delta.partial_json;
+              if (ev.delta.type === "input_json_delta" && (b.type === "tool_use" || b.type === "mcp_tool_use")) {
+                b.inputStr += ev.delta.partial_json;
+              }
             }
             if (ev.type === "message_delta") stopReason = ev.delta.stop_reason;
           } catch { /* ignore stream line */ }
         }
       }
       console.log("STOP REASON:", stopReason, "BLOCKS:", JSON.stringify(Object.values(blocks).map(b => ({ type: b?.type, name: b?.name }))));
+      {
+        const mergedStreamText = streamTextFromBlocks(blocks).trim();
+        const mcpTail = streamMcpResultTail(blocks);
+        if (mcpTail && !mergedStreamText) {
+          setMessages((prev) => {
+            const u = [...prev];
+            if (u[u.length - 1]?.role === "assistant") {
+              u[u.length - 1] = { ...u[u.length - 1], content: mcpTail };
+            }
+            return u;
+          });
+        }
+      }
       if (stopReason === "tool_use") {
         const toolBlocks = Object.values(blocks).filter(b => b?.type === "tool_use");
+        if (toolBlocks.length > 0) {
         const emailDrafts = []; const ghlActions = [];
         const parsedTools = toolBlocks.map(b => {
           let input = {};
@@ -1753,29 +2015,27 @@ Request: "${userText}"` }] });
 
           return { type: "tool_result", tool_use_id: b.id, content: JSON.stringify({ success: true }) };
         }));
-        const assistantContent = Object.values(blocks).filter(Boolean).map(b =>
-          b.type === "text"
-            ? { type:"text", text: b.text || "." }
-            : { type:"tool_use", id:b.id, name:b.name, input: parsedTools.find(p=>p.id===b.id)?.input || {} }
-        );
+        const assistantContent = buildAssistantContentFromBlocks(blocks, parsedTools);
         setMessages(prev => { const u=[...prev]; u[u.length-1]={ role:"assistant", content:"" }; return u; });
         const res2 = await fetch("https://api.anthropic.com/v1/messages", {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-api-key": ANTHROPIC_KEY,
-            "anthropic-version": "2023-06-01",
-            "anthropic-dangerous-direct-browser-access": "true",
-          },
-          body: JSON.stringify({
-            model: MODEL, max_tokens: 1000, stream: true,
-            system: buildSystemPrompt(),
-            tools: toolsForRequest,
-            tool_choice: forceGithubToolUse && toolBlocks.some(b => b.name === "query_github")
-              ? { type:"tool", name:"find_replace_github_file" }
-              : forceGithubToolUse ? { type:"any" } : { type:"auto" },
-            messages: [...apiMessages, { role:"assistant", content:assistantContent }, { role:"user", content:toolResults }],
-          }),
+          headers: anthropicHeadersWithMcp,
+          body: JSON.stringify(
+            anthropicBodyWithGhlMcp({
+              model: MODEL,
+              max_tokens: 1000,
+              stream: true,
+              system: buildSystemPrompt(),
+              tools: toolsForRequest,
+              tool_choice:
+                forceGithubToolUse && toolBlocks.some((b) => b.name === "query_github")
+                  ? { type: "tool", name: "find_replace_github_file" }
+                  : forceGithubToolUse
+                    ? { type: "any" }
+                    : { type: "auto" },
+              messages: [...apiMessages, { role: "assistant", content: assistantContent }, { role: "user", content: toolResults }],
+            }),
+          ),
         });
         if (!res2.ok) {
           const errText = await res2.text();
@@ -1798,20 +2058,54 @@ Request: "${userText}"` }] });
               const ev = JSON.parse(line.slice(6).trim());
               if (ev.type === "content_block_start") {
                 const cb = ev.content_block;
-                blocks2[ev.index] = cb.type === "tool_use"
-                  ? { type:"tool_use", id:cb.id, name:cb.name, inputStr:"" }
-                  : { type:"text", text:"" };
-                if (cb.type === "tool_use") setActiveTools(prev => [...prev, { name:cb.name, status:"running" }]);
+                if (cb.type === "tool_use") {
+                  blocks2[ev.index] = { type: "tool_use", id: cb.id, name: cb.name, inputStr: "" };
+                  setActiveTools((prev) => [...prev, { name: cb.name, status: "running" }]);
+                } else if (cb.type === "mcp_tool_use") {
+                  const seed =
+                    cb.input != null ? (typeof cb.input === "string" ? cb.input : JSON.stringify(cb.input)) : "";
+                  blocks2[ev.index] = {
+                    type: "mcp_tool_use",
+                    id: cb.id,
+                    name: cb.name,
+                    server_name: cb.server_name || "ghl-mcp",
+                    inputStr: seed || "",
+                  };
+                  setActiveTools((prev) => [...prev, { name: `ghl:${cb.name}`, status: "running" }]);
+                } else if (cb.type === "mcp_tool_result") {
+                  let summary = "";
+                  try {
+                    summary = JSON.stringify(JSON.parse(cb.content?.[0]?.text || "{}"), null, 2);
+                  } catch {
+                    summary = cb.content?.[0]?.text || "";
+                  }
+                  blocks2[ev.index] = {
+                    type: "mcp_tool_result",
+                    tool_use_id: cb.tool_use_id,
+                    is_error: cb.is_error,
+                    content: cb.content,
+                    summary,
+                  };
+                } else {
+                  blocks2[ev.index] = { type: "text", text: "" };
+                }
               }
               if (ev.type === "content_block_delta") {
                 const b = blocks2[ev.index];
                 if (!b) continue;
                 if (ev.delta.type === "text_delta") {
+                  if (b.type !== "text") continue;
                   b.text += ev.delta.text;
                   const snap = b.text;
-                  setMessages(prev => { const u=[...prev]; u[u.length-1]={ role:"assistant", content:snap, emailDrafts, ghlActions }; return u; });
+                  setMessages((prev) => {
+                    const u = [...prev];
+                    u[u.length - 1] = { role: "assistant", content: snap, emailDrafts, ghlActions };
+                    return u;
+                  });
                 }
-                if (ev.delta.type === "input_json_delta") b.inputStr += ev.delta.partial_json;
+                if (ev.delta.type === "input_json_delta" && (b.type === "tool_use" || b.type === "mcp_tool_use")) {
+                  b.inputStr += ev.delta.partial_json;
+                }
               }
               if (ev.type === "message_delta") stopReason2 = ev.delta.stop_reason;
             } catch { /* ignore stream line */ }
@@ -1819,9 +2113,23 @@ Request: "${userText}"` }] });
         }
         const r2Text = Object.values(blocks2).filter(b => b?.type === "text").map(b => b.text || "").join("");
         console.log("R2 DONE. stopReason2:", stopReason2, "text length:", r2Text.length);
+        {
+          const mergedR2 = streamTextFromBlocks(blocks2).trim();
+          const mcpR2 = streamMcpResultTail(blocks2);
+          if (mcpR2 && !mergedR2) {
+            setMessages((prev) => {
+              const u = [...prev];
+              if (u[u.length - 1]?.role === "assistant") {
+                u[u.length - 1] = { ...u[u.length - 1], content: mcpR2, emailDrafts, ghlActions };
+              }
+              return u;
+            });
+          }
+        }
 
         if (stopReason2 === "tool_use") {
           const toolBlocks2 = Object.values(blocks2).filter(b => b?.type === "tool_use");
+          if (toolBlocks2.length > 0) {
           const parsedTools2 = toolBlocks2.map(b => {
             let input = {};
             try { input = JSON.parse(b.inputStr || "{}"); } catch { input = {}; }
@@ -1869,33 +2177,28 @@ Request: "${userText}"` }] });
 
             return { type: "tool_result", tool_use_id: b.id, content: JSON.stringify({ success: true }) };
           }));
-          const assistantContent2 = Object.values(blocks2).filter(Boolean).map(b =>
-            b.type === "text"
-              ? { type:"text", text: b.text || "." }
-              : { type:"tool_use", id:b.id, name:b.name, input: parsedTools2.find(p=>p.id===b.id)?.input || {} }
-          );
+          const assistantContent2 = buildAssistantContentFromBlocks(blocks2, parsedTools2);
           setMessages(prev => { const u=[...prev]; u[u.length-1]={ role:"assistant", content:"" }; return u; });
           const res3 = await fetch("https://api.anthropic.com/v1/messages", {
             method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "x-api-key": ANTHROPIC_KEY,
-              "anthropic-version": "2023-06-01",
-              "anthropic-dangerous-direct-browser-access": "true",
-            },
-            body: JSON.stringify({
-              model: MODEL, max_tokens: 1000, stream: true,
-              system: buildSystemPrompt(),
-              tools: toolsForRequest,
-              tool_choice: { type: "auto" },
-              messages: [
-                ...apiMessages,
-                { role:"assistant", content:assistantContent },
-                { role:"user", content:toolResults },
-                { role:"assistant", content:assistantContent2 },
-                { role:"user", content:toolResults2 },
-              ],
-            }),
+            headers: anthropicHeadersWithMcp,
+            body: JSON.stringify(
+              anthropicBodyWithGhlMcp({
+                model: MODEL,
+                max_tokens: 1000,
+                stream: true,
+                system: buildSystemPrompt(),
+                tools: toolsForRequest,
+                tool_choice: { type: "auto" },
+                messages: [
+                  ...apiMessages,
+                  { role: "assistant", content: assistantContent },
+                  { role: "user", content: toolResults },
+                  { role: "assistant", content: assistantContent2 },
+                  { role: "user", content: toolResults2 },
+                ],
+              }),
+            ),
           });
           if (!res3.ok) {
             const errText = await res3.text();
@@ -1905,24 +2208,89 @@ Request: "${userText}"` }] });
           const reader3 = res3.body.getReader();
           let buf3 = "";
           let finalText3 = "";
+          const blocks3 = {};
           while (true) {
             const { done, value } = await reader3.read();
             if (done) break;
-            buf3 += dec.decode(value, { stream:true });
+            buf3 += dec.decode(value, { stream: true });
             const lines = buf3.split("\n");
             buf3 = lines.pop() ?? "";
             for (const line of lines) {
               if (!line.startsWith("data: ")) continue;
               try {
                 const ev = JSON.parse(line.slice(6).trim());
-                if (ev.type === "content_block_delta" && ev.delta?.type === "text_delta") {
-                  finalText3 += ev.delta.text;
-                  setMessages(prev => { const u=[...prev]; u[u.length-1]={ role:"assistant", content:finalText3, emailDrafts, ghlActions }; return u; });
+                if (ev.type === "content_block_start") {
+                  const cb = ev.content_block;
+                  if (cb.type === "mcp_tool_use") {
+                    const seed =
+                      cb.input != null ? (typeof cb.input === "string" ? cb.input : JSON.stringify(cb.input)) : "";
+                    blocks3[ev.index] = {
+                      type: "mcp_tool_use",
+                      id: cb.id,
+                      name: cb.name,
+                      server_name: cb.server_name || "ghl-mcp",
+                      inputStr: seed || "",
+                    };
+                    setActiveTools((prev) => [...prev, { name: `ghl:${cb.name}`, status: "running" }]);
+                  } else if (cb.type === "mcp_tool_result") {
+                    let summary = "";
+                    try {
+                      summary = JSON.stringify(JSON.parse(cb.content?.[0]?.text || "{}"), null, 2);
+                    } catch {
+                      summary = cb.content?.[0]?.text || "";
+                    }
+                    blocks3[ev.index] = {
+                      type: "mcp_tool_result",
+                      tool_use_id: cb.tool_use_id,
+                      is_error: cb.is_error,
+                      content: cb.content,
+                      summary,
+                    };
+                  } else if (cb.type === "tool_use") {
+                    blocks3[ev.index] = { type: "tool_use", id: cb.id, name: cb.name, inputStr: "" };
+                    setActiveTools((prev) => [...prev, { name: cb.name, status: "running" }]);
+                  } else {
+                    blocks3[ev.index] = { type: "text", text: "" };
+                  }
                 }
-              } catch { /* ignore stream line */ }
+                if (ev.type === "content_block_delta") {
+                  const b3 = blocks3[ev.index];
+                  if (!b3) continue;
+                  if (ev.delta?.type === "text_delta") {
+                    if (b3.type !== "text") continue;
+                    b3.text += ev.delta.text;
+                    finalText3 = streamTextFromBlocks(blocks3);
+                    setMessages((prev) => {
+                      const u = [...prev];
+                      u[u.length - 1] = { role: "assistant", content: finalText3, emailDrafts, ghlActions };
+                      return u;
+                    });
+                  }
+                  if (ev.delta?.type === "input_json_delta" && (b3.type === "tool_use" || b3.type === "mcp_tool_use")) {
+                    b3.inputStr += ev.delta.partial_json;
+                  }
+                }
+              } catch {
+                /* ignore stream line */
+              }
+            }
+          }
+          {
+            const mergedR3 = streamTextFromBlocks(blocks3).trim();
+            const mcpR3 = streamMcpResultTail(blocks3);
+            if (mcpR3 && !mergedR3) {
+              setMessages((prev) => {
+                const u = [...prev];
+                if (u[u.length - 1]?.role === "assistant") {
+                  u[u.length - 1] = { ...u[u.length - 1], content: mcpR3, emailDrafts, ghlActions };
+                }
+                return u;
+              });
             }
           }
           console.log("R3 DONE. Final text length:", finalText3.length);
+          }
+        }
         }
       }
     } catch(e) {
