@@ -825,12 +825,44 @@ Idea: "${name}" — ${description} (Category: ${category})`;
 
 const kkPriColor = (p) => (p === "HIGH" ? KK.danger : p === "MED" ? KK.warning : KK.dim);
 
+/** Make.com tool IDs (KnockKnock dashboard) */
+const KK_TOOL_CONTACT_SEARCH = 4809469;
+const KK_TOOL_KPI_CONTACT_COUNT = 4809474;
+const KK_FALLBACK_CONTACTS_KPI = "76";
+
+const kkSpinnerStyle = {
+  display: "inline-block",
+  width: 20,
+  height: 20,
+  borderRadius: "50%",
+  border: "2px solid rgba(255,255,255,0.12)",
+  borderTopColor: "currentColor",
+  color: "#C8A84B",
+  animation: "kkSpin 0.75s linear infinite",
+  flexShrink: 0,
+};
+
+const parseKpiContactTotal = (res) => {
+  const t = res?.outputs?.tool_output?.data?.meta?.total;
+  if (typeof t === "number" && Number.isFinite(t)) return t;
+  if (typeof t === "string" && t.trim() !== "" && Number.isFinite(Number(t))) return Number(t);
+  return null;
+};
+
+const parseContactSearchResults = (res) => {
+  const c = res?.outputs?.tool_output?.data?.contacts;
+  return Array.isArray(c) ? c : null;
+};
+
 /** Tabbed GHL / Make ops dashboard shown when KnockKnock mode is on (lives in App.jsx). */
 function KnockKnockCommandCenter({ callMakeTrigger }) {
   const [tab, setTab] = useState("dashboard");
   const [contactQuery, setContactQuery] = useState("");
   const [searchBusy, setSearchBusy] = useState(false);
-  const [searchResult, setSearchResult] = useState(null);
+  const [searchContacts, setSearchContacts] = useState(null);
+  const [searchError, setSearchError] = useState(null);
+  const [kpiContactsTotal, setKpiContactsTotal] = useState(null);
+  const [kpiLoading, setKpiLoading] = useState(false);
   const [pushBusy, setPushBusy] = useState(false);
   const [pushNote, setPushNote] = useState(null);
   const [pushForm, setPushForm] = useState({
@@ -845,16 +877,48 @@ function KnockKnockCommandCenter({ callMakeTrigger }) {
 
   const fbDays = kkDaysUntil(2026, 5, 15);
 
+  useEffect(() => {
+    if (tab !== "dashboard") return;
+    let cancelled = false;
+    (async () => {
+      setKpiLoading(true);
+      try {
+        const res = await callMakeTrigger({ scenario_id: KK_TOOL_KPI_CONTACT_COUNT, data: {} });
+        const total = parseKpiContactTotal(res);
+        if (!cancelled) setKpiContactsTotal(total);
+      } catch {
+        if (!cancelled) setKpiContactsTotal(null);
+      } finally {
+        if (!cancelled) setKpiLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [tab, callMakeTrigger]);
+
   const runSearch = async () => {
     const q = contactQuery.trim();
     if (!q) return;
     setSearchBusy(true);
-    setSearchResult(null);
+    setSearchContacts(null);
+    setSearchError(null);
     try {
-      const res = await callMakeTrigger({ scenario_id: 4808643, data: { name: q } });
-      setSearchResult(res);
+      const res = await callMakeTrigger({ scenario_id: KK_TOOL_CONTACT_SEARCH, data: { query: q } });
+      const parsed = parseContactSearchResults(res);
+      if (parsed != null) {
+        setSearchContacts(parsed);
+      } else {
+        setSearchContacts(null);
+        setSearchError(
+          res?.error
+            ? (typeof res.error === "string" ? res.error : JSON.stringify(res.error))
+            : "Could not read contacts from response."
+        );
+      }
     } catch (e) {
-      setSearchResult({ error: String(e?.message || e) });
+      setSearchContacts(null);
+      setSearchError(String(e?.message || e));
     }
     setSearchBusy(false);
   };
@@ -941,8 +1005,24 @@ function KnockKnockCommandCenter({ callMakeTrigger }) {
               {" — "}Renew before June 15, 2026 in Make.com → Connections
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: 8 }}>
+              <div style={{ ...card, textAlign: "center" }}>
+                <div
+                  style={{
+                    minHeight: 28,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    fontSize: 20,
+                    fontWeight: 700,
+                    color: KK.primary,
+                    fontFamily: "'DM Mono', monospace",
+                  }}
+                >
+                  {kpiLoading ? <span style={kkSpinnerStyle} aria-label="Loading" /> : kpiContactsTotal != null ? kpiContactsTotal : KK_FALLBACK_CONTACTS_KPI}
+                </div>
+                <div style={{ fontSize: 10, color: KK.dim, marginTop: 4 }}>Contacts in GHL</div>
+              </div>
               {[
-                { k: "Contacts in GHL", v: "76" },
                 { k: "Vera VMs Dropped", v: "76" },
                 { k: "Callbacks", v: "1" },
                 { k: "FB Audience Size", v: "76" },
@@ -1003,12 +1083,12 @@ function KnockKnockCommandCenter({ callMakeTrigger }) {
         {tab === "contacts" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
             <div style={{ ...card }}>
-              <div style={{ fontSize: 10, color: KK.primary, marginBottom: 8, fontFamily: "'DM Mono', monospace" }}>SEARCH CONTACT (4808643)</div>
+              <div style={{ fontSize: 10, color: KK.primary, marginBottom: 8, fontFamily: "'DM Mono', monospace" }}>SEARCH CONTACT ({KK_TOOL_CONTACT_SEARCH})</div>
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                 <input
                   value={contactQuery}
                   onChange={(e) => setContactQuery(e.target.value)}
-                  placeholder="Name to search"
+                  placeholder="Search contacts"
                   style={{
                     flex: 1,
                     minWidth: 160,
@@ -1033,27 +1113,83 @@ function KnockKnockCommandCenter({ callMakeTrigger }) {
                     cursor: searchBusy ? "wait" : "pointer",
                     fontSize: 12,
                     fontFamily: "'DM Mono', monospace",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 8,
+                    minWidth: 88,
+                    justifyContent: "center",
                   }}
                 >
-                  {searchBusy ? "…" : "Search"}
+                  {searchBusy && <span style={{ ...kkSpinnerStyle, width: 14, height: 14 }} aria-hidden />}
+                  {searchBusy ? "Searching…" : "Search"}
                 </button>
               </div>
-              {searchResult != null && (
-                <pre
-                  style={{
-                    marginTop: 10,
-                    fontSize: 11,
-                    color: KK.dim,
-                    background: KK.bg,
-                    padding: 10,
-                    borderRadius: 8,
-                    overflow: "auto",
-                    maxHeight: 200,
-                    border: `1px solid ${KK.border}`,
-                  }}
-                >
-                  {JSON.stringify(searchResult, null, 2)}
-                </pre>
+              {searchBusy && searchContacts == null && !searchError && (
+                <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 10, fontSize: 12, color: KK.dim }}>
+                  <span style={{ ...kkSpinnerStyle, width: 16, height: 16 }} aria-hidden />
+                  Loading results…
+                </div>
+              )}
+              {searchError && (
+                <div style={{ marginTop: 10, fontSize: 12, color: KK.danger }}>{searchError}</div>
+              )}
+              {searchContacts != null && (
+                <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 10, maxHeight: 280, overflowY: "auto" }}>
+                  {searchContacts.length === 0 && !searchBusy && <div style={{ fontSize: 12, color: KK.dim }}>No contacts found.</div>}
+                  {searchContacts.map((c, i) => (
+                    <div
+                      key={i}
+                      style={{
+                        padding: 10,
+                        borderRadius: 8,
+                        border: `1px solid ${KK.border}`,
+                        background: KK.bg,
+                        fontSize: 11,
+                        color: KK.text,
+                        lineHeight: 1.45,
+                      }}
+                    >
+                      <div style={{ fontWeight: 600, color: KK.primary, marginBottom: 6 }}>
+                        {[c.firstNameRaw, c.lastNameRaw].filter(Boolean).join(" ") || "—"}
+                      </div>
+                      {c.phone && (
+                        <div>
+                          <span style={{ color: KK.dim }}>phone</span> {String(c.phone)}
+                        </div>
+                      )}
+                      {c.email && (
+                        <div>
+                          <span style={{ color: KK.dim }}>email</span> {String(c.email)}
+                        </div>
+                      )}
+                      {Array.isArray(c.tags) && c.tags.length > 0 && (
+                        <div>
+                          <span style={{ color: KK.dim }}>tags</span> {c.tags.join(", ")}
+                        </div>
+                      )}
+                      {(c.address1 || c.city || c.state) && (
+                        <div>
+                          <span style={{ color: KK.dim }}>address</span> {[c.address1, c.city, c.state].filter(Boolean).join(", ")}
+                        </div>
+                      )}
+                      {c.source && (
+                        <div>
+                          <span style={{ color: KK.dim }}>source</span> {String(c.source)}
+                        </div>
+                      )}
+                      {c.assignedTo && (
+                        <div>
+                          <span style={{ color: KK.dim }}>assigned</span> {String(c.assignedTo)}
+                        </div>
+                      )}
+                      {c.dateAdded && (
+                        <div>
+                          <span style={{ color: KK.dim }}>added</span> {String(c.dateAdded)}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
               )}
             </div>
             <div style={{ ...card }}>
@@ -1911,6 +2047,7 @@ Request: "${userText}"` }] });
         @keyframes micPulse{0%{box-shadow:0 0 0 0 rgba(200,168,75,0.6)}70%{box-shadow:0 0 0 10px rgba(200,168,75,0)}100%{box-shadow:0 0 0 0 rgba(200,168,75,0)}}
         @keyframes speakPulse{0%,100%{opacity:0.4;transform:scaleY(0.6)}50%{opacity:1;transform:scaleY(1)}}
         @keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
+        @keyframes kkSpin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
         ::-webkit-scrollbar{width:3px}::-webkit-scrollbar-thumb{background:#2a2a2e;border-radius:4px}
         textarea{resize:none;font-family:inherit}textarea:focus{outline:none}
         .qbtn:hover{background:rgba(200,168,75,0.12)!important;border-color:rgba(200,168,75,0.4)!important;color:#C8A84B!important}
