@@ -7,6 +7,8 @@ const MODEL = "claude-sonnet-4-6";
 const SUPABASE_URL = "https://gpbuqpwusztorbwxxkka.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdwYnVxcHd1c3p0b3Jid3h4a2thIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU4MjMxMDcsImV4cCI6MjA5MTM5OTEwN30._EvUhea4Y2e2DqmFxxRwkzx5UkyaGC5rkuphMU7cmhw";
 const JARVIS_TOOLS_URL = "https://gpbuqpwusztorbwxxkka.supabase.co/functions/v1/jarvis-tools";
+/** Same-origin Vercel serverless route; MAKE_API_TOKEN never goes to the browser */
+const MAKE_TRIGGER_URL = "/api/trigger-make";
 const supabase = {
   from: (table) => ({
     select: (cols = "*") => ({
@@ -75,13 +77,14 @@ Capabilities: emails, SOPs, strategy, ClosingPilot product, Facebook Ads, revenu
 
 Format: Lead with answer, then reasoning. SOPs = numbered steps. Strategy = recommendation first.
 
-TOOLS AVAILABLE — you have exactly six tools: send_email, trigger_ghl, query_github, query_supabase, write_github_file, find_replace_github_file.
+TOOLS AVAILABLE — you have exactly seven tools: send_email, trigger_ghl, query_github, query_supabase, write_github_file, find_replace_github_file, trigger_make_tool.
 1. send_email — fires a real email through GHL. Fully connected and working.
 2. trigger_ghl — adds contacts or triggers GHL automations.
 3. query_github — read files, list repo contents, or recent commits via the Edge Function.
 4. query_supabase — query live Supabase tables (memories, ideas) via the Edge Function.
 5. write_github_file — Use find_replace_github_file for ALL file edits — specify only what changes, not the entire file. Only use write_github_file for new files.
 6. find_replace_github_file — read a file from GitHub, apply find/replace pairs, and commit in one operation. Use for all edits to existing files; more reliable than rewriting the whole file.
+7. trigger_make_tool — run a Make.com scenario by ID (KnockKnock / GHL actions). Prefer KnockKnock mode for this tool.
 
 TOOL EXECUTION RULES — NON-NEGOTIABLE:
 - When Matthew approves a code change, call find_replace_github_file for edits or write_github_file for brand-new files IMMEDIATELY. Do not describe what you are about to do. Do not say "shipping now" or "committing now". Just call the tool.
@@ -201,8 +204,82 @@ const TOOLS = [
       },
       required: ["owner", "repo", "path", "replacements", "message"]
     }
-  }
+  },
+  {
+    name: "trigger_make_tool",
+    description: "Execute a Make.com tool by scenario ID with input data. Used by KnockKnock Commander to fire GHL actions.",
+    input_schema: {
+      type: "object",
+      properties: {
+        scenario_id: {
+          type: "number",
+          description: "The Make.com tool/scenario ID to run",
+        },
+        data: {
+          type: "object",
+          description: "Input data to pass to the tool",
+        },
+      },
+      required: ["scenario_id", "data"],
+    },
+  },
 ];
+
+const TRIGGER_MAKE_TOOL = TOOLS[TOOLS.length - 1];
+const KNOCKKNOCK_TOOLS = [TRIGGER_MAKE_TOOL];
+
+const KNOCKKNOCK_SYSTEM_PROMPT = `You are the KnockKnock Commander Agent inside JARVIS. You run Matt Bright's AI lead generation system for iHome Team at Keller Williams Kingsport TN.
+
+You have direct access to these tools via Make.com. When you need to use one, call the trigger_make_tool tool with the scenario ID and data.
+
+AVAILABLE TOOLS:
+- Tool 4805253: Push new contact to GHL
+  Input: {first_name, last_name, phone_1, property_address, property_city, property_zip}
+  
+- Tool 4808055: Send Day 3 email (The Soft Check-In)
+  Input: {contactId, email}
+  
+- Tool 4808062: Send Day 7 email (The Options Email)
+  Input: {contactId, email}
+  
+- Tool 4808067: Send Day 14 email (The Last Call)
+  Input: {contactId, email}
+  
+- Tool 4808074: Add tag to GHL contact
+  Input: {contactId, tag}
+  
+- Tool 4808160: Update GHL contact email
+  Input: {contactId, email}
+  
+- Tool 4808643: Search GHL contact by name
+  Input: {query}
+
+SYSTEM CONTEXT:
+- GHL Location: pnRGATgdXDvvxcDOLMGa
+- Pipeline: Seller_Home_EVAL
+- Agents: Tasha Glasscock (423-277-2183), Cory Smith (423-672-8179), Nate Wright (423-747-6175)
+- A2P Number: +14234272926
+- Landing page: sell.ihomehq.com
+- 71 pre-foreclosure contacts in GHL with emails uploaded
+- Vera voicemails have been dropped, callbacks received
+- Facebook custom audience built (not yet running ads)
+
+RULES:
+- Never suggest Apollo or any paid tools
+- All customer-facing copy must be TREC compliant
+- Include "iHome Team | Keller Williams Kingsport" in all communications
+- Never use "foreclosure", "distressed", "behind on payments" in customer copy
+- Execute immediately. Don't ask clarifying questions unless truly necessary.
+- When Matt says "send emails" or "push contacts" — use the tools. Don't explain what you would do. DO IT.
+
+COMMANDS MATT MIGHT USE:
+- "search [name]" → use tool 4808643
+- "send day 3 email to [name]" → search first to get contactId, then use tool 4808055
+- "push [name] [phone] [address] [city] [zip]" → use tool 4805253
+- "tag [name] [tagname]" → search first, then use tool 4808074
+- "status" → report what's built, what's live, what needs to happen next
+- "run drip" → iterate through contacts and send appropriate emails based on timing
+`;
 
 const isEmailIntent = (text) => /\b(email|send|compose|write.*to|message.*to|draft)\b/i.test(text);
 const isOpsSupabaseIntent = (text) =>
@@ -255,11 +332,12 @@ Focus on SOPs, daily briefings, onboarding, prioritization, and helping Matthew 
 };
 
 const AGENTS = [
-  { id: "CFO",  emoji: "💰", label: "CFO"  },
-  { id: "CMO",  emoji: "📣", label: "CMO"  },
-  { id: "CTO",  emoji: "🔧", label: "CTO"  },
-  { id: "MOAT", emoji: "💀", label: "MOAT" },
-  { id: "OPS",  emoji: "⚙️", label: "OPS"  },
+  { id: "CFO",        emoji: "💰", label: "CFO"  },
+  { id: "CMO",        emoji: "📣", label: "CMO"  },
+  { id: "CTO",        emoji: "🔧", label: "CTO"  },
+  { id: "MOAT",       emoji: "💀", label: "MOAT" },
+  { id: "OPS",        emoji: "⚙️", label: "OPS"  },
+  { id: "knockknock", emoji: "🚪", label: "KnockKnock", description: "Lead generation commander" },
 ];
 
 const IDEA_CATEGORIES = ["App / SaaS", "Automation", "Agency", "Real Estate", "AI Tool", "Other"];
@@ -267,7 +345,7 @@ const EMPTY_FORM = { name: "", description: "", category: "App / SaaS" };
 
 const storage = {
   get: (key) => { try { return JSON.parse(localStorage.getItem(key)); } catch { return null; } },
-  set: (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)); } catch {} },
+  set: (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)); } catch { /* quota or private mode */ } },
 };
 
 const callClaude = (body) => fetch("https://api.anthropic.com/v1/messages", {
@@ -286,6 +364,20 @@ const callTool = async (tool, params = {}) => {
   return data.result;
 };
 
+const callMakeTrigger = async ({ scenario_id, data }) => {
+  const res = await fetch(MAKE_TRIGGER_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ scenario_id, data }),
+  });
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { error: "non_json_response", status: res.status, raw: text };
+  }
+};
+
 // ── Typing dots ──────────────────────────────────────────────────────────────
 const TypingDots = () => (
   <div style={{ display:"flex", alignItems:"center", gap:5, padding:"10px 14px", background:"rgba(255,255,255,0.04)", borderRadius:12, width:"fit-content", border:"0.5px solid rgba(255,255,255,0.08)" }}>
@@ -295,8 +387,12 @@ const TypingDots = () => (
 
 // ── Tool badge ────────────────────────────────────────────────────────────────
 const ToolBadge = ({ name, status }) => {
-  const map = { send_email:["#534AB7","#EEEDFE","✉ Preparing email"], trigger_ghl:["#993C1D","#FAECE7","⚡ Triggering GHL"] };
-  const [fg, bg, label] = map[name] || ["#5F5E5A","#F1EFE8", name];
+  const map = {
+    send_email: ["#534AB7", "#EEEDFE", "✉ Preparing email"],
+    trigger_ghl: ["#993C1D", "#FAECE7", "⚡ Triggering GHL"],
+    trigger_make_tool: ["#1B4332", "#D8F3DC", "🚪 Make.com"],
+  };
+  const [fg, bg, label] = map[name] || ["#5F5E5A", "#F1EFE8", name];
   return (
     <div style={{ display:"inline-flex", alignItems:"center", gap:6, padding:"4px 10px", background:bg, borderRadius:20, fontSize:11, color:fg, fontWeight:500, margin:"4px 0", border:`0.5px solid ${fg}33` }}>
       {label} {status === "running" ? "..." : "✓"}
@@ -650,7 +746,6 @@ const VoiceVisualizer = ({ analyserRef }) => {
 
       for (let i = 0; i < barCount; i++) {
         const value = dataArray[i] / 255;
-        const barHeight = Math.max(3, value * 140);
         const x = startX + i * (barWidth + gap);
 
         // Mirror index for symmetric mouth effect
@@ -659,9 +754,6 @@ const VoiceVisualizer = ({ analyserRef }) => {
         const mirrorHeight = Math.max(3, mirrorValue * 140);
 
         // Gold to silver gradient based on amplitude
-        const r = Math.floor(200 - value * 60);
-        const g = Math.floor(168 - value * 40);
-        const b = Math.floor(75 + value * 180);
         const alpha = 0.4 + value * 0.6;
 
         // Glow effect
@@ -695,7 +787,7 @@ const VoiceVisualizer = ({ analyserRef }) => {
 
     frame = requestAnimationFrame(animate);
     return () => cancelAnimationFrame(frame);
-  }, []);
+  }, [analyserRef]);
 
   return (
     <canvas ref={canvasRef} style={{
@@ -736,13 +828,18 @@ export default function App() {
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior:"smooth" }); }, [messages, loading]);
 
-  const saveMemories = async (mem) => { setMemories(mem); };
   const deleteMemory = async (key) => {
     await supabase.from("memories").delete().eq("key", key);
     setMemories(prev => prev.filter(m => m.key !== key));
   };
 
   const buildSystemPrompt = () => {
+    if (activeAgent === "knockknock") {
+      const base = KNOCKKNOCK_SYSTEM_PROMPT;
+      if (!memories.length) return base;
+      const block = memories.map((m) => `[${m.category.toUpperCase()}] ${m.key}: ${m.value}`).join("\n");
+      return `${base}\n\n--- MATTHEW'S MEMORY ---\n${block}\n--- END MEMORY ---`;
+    }
     const agentBlock = activeAgent && AGENT_PROMPTS[activeAgent]
       ? `\n\n${AGENT_PROMPTS[activeAgent]}`
       : "";
@@ -775,7 +872,7 @@ export default function App() {
         });
         return parsed.facts.length;
       }
-    } catch {}
+    } catch { /* ignore extract failures */ }
     return 0;
   };
 
@@ -810,7 +907,7 @@ Request: "${userText}"` }] });
 
     extractFacts(userText).then(n => { if (n>0) { setSavingMemory(true); setTimeout(()=>setSavingMemory(false),2500); }});
 
-    if (isEmailIntent(userText)) {
+    if (activeAgent !== "knockknock" && isEmailIntent(userText)) {
       const emailData = await composeEmail(userText);
       if (emailData?.missing_email) {
         setMessages(prev=>[...prev,{ role:"assistant", content:"What's the recipient's email address? I have everything else ready." }]);
@@ -823,9 +920,10 @@ Request: "${userText}"` }] });
     }
 
     try {
+      const toolsForRequest = activeAgent === "knockknock" ? KNOCKKNOCK_TOOLS : TOOLS;
       const apiMessages = newMessages.map(m=>({ role:m.role, content:m.content }));
       // Force tool use if message contains commit intent
-      const forceGithubToolUse = /commit|write|fix|update|change|deploy/i.test(userText);
+      const forceGithubToolUse = activeAgent !== "knockknock" && /commit|write|fix|update|change|deploy/i.test(userText);
       const forceOpsToolUse = activeAgent === "OPS" && isOpsSupabaseIntent(userText);
       const forceToolUse = forceGithubToolUse || forceOpsToolUse;
       setMessages(prev => [...prev, { role:"assistant", content:"" }]);
@@ -840,7 +938,7 @@ Request: "${userText}"` }] });
         body: JSON.stringify({
           model: MODEL, max_tokens: 1000, stream: true,
           system: buildSystemPrompt(),
-          tools: TOOLS, tool_choice: forceToolUse ? { type:"any" } : { type:"auto" },
+          tools: toolsForRequest, tool_choice: forceToolUse ? { type:"any" } : { type:"auto" },
           messages: apiMessages,
         }),
       });
@@ -879,7 +977,7 @@ Request: "${userText}"` }] });
               if (ev.delta.type === "input_json_delta") b.inputStr += ev.delta.partial_json;
             }
             if (ev.type === "message_delta") stopReason = ev.delta.stop_reason;
-          } catch {}
+          } catch { /* ignore stream line */ }
         }
       }
       console.log("STOP REASON:", stopReason, "BLOCKS:", JSON.stringify(Object.values(blocks).map(b => ({ type: b?.type, name: b?.name }))));
@@ -888,7 +986,7 @@ Request: "${userText}"` }] });
         const emailDrafts = []; const ghlActions = [];
         const parsedTools = toolBlocks.map(b => {
           let input = {};
-          try { input = JSON.parse(b.inputStr || "{}"); } catch {}
+          try { input = JSON.parse(b.inputStr || "{}"); } catch { input = {}; }
           return { ...b, input };
         });
         const toolResults = await Promise.all(parsedTools.map(async (b) => {
@@ -922,6 +1020,11 @@ Request: "${userText}"` }] });
             return { type: "tool_result", tool_use_id: b.id, content: JSON.stringify(toolResult) };
           }
 
+          if (b.name === "trigger_make_tool") {
+            const toolResult = await callMakeTrigger(input);
+            return { type: "tool_result", tool_use_id: b.id, content: JSON.stringify(toolResult) };
+          }
+
           return { type: "tool_result", tool_use_id: b.id, content: JSON.stringify({ success: true }) };
         }));
         const assistantContent = Object.values(blocks).filter(Boolean).map(b =>
@@ -941,7 +1044,7 @@ Request: "${userText}"` }] });
           body: JSON.stringify({
             model: MODEL, max_tokens: 1000, stream: true,
             system: buildSystemPrompt(),
-            tools: TOOLS,
+            tools: toolsForRequest,
             tool_choice: forceGithubToolUse && toolBlocks.some(b => b.name === "query_github")
               ? { type:"tool", name:"find_replace_github_file" }
               : forceGithubToolUse ? { type:"any" } : { type:"auto" },
@@ -985,7 +1088,7 @@ Request: "${userText}"` }] });
                 if (ev.delta.type === "input_json_delta") b.inputStr += ev.delta.partial_json;
               }
               if (ev.type === "message_delta") stopReason2 = ev.delta.stop_reason;
-            } catch {}
+            } catch { /* ignore stream line */ }
           }
         }
         const r2Text = Object.values(blocks2).filter(b => b?.type === "text").map(b => b.text || "").join("");
@@ -995,7 +1098,7 @@ Request: "${userText}"` }] });
           const toolBlocks2 = Object.values(blocks2).filter(b => b?.type === "tool_use");
           const parsedTools2 = toolBlocks2.map(b => {
             let input = {};
-            try { input = JSON.parse(b.inputStr || "{}"); } catch {}
+            try { input = JSON.parse(b.inputStr || "{}"); } catch { input = {}; }
             return { ...b, input };
           });
           const toolResults2 = await Promise.all(parsedTools2.map(async (b) => {
@@ -1033,6 +1136,11 @@ Request: "${userText}"` }] });
               return { type: "tool_result", tool_use_id: b.id, content: JSON.stringify(toolResult) };
             }
 
+            if (b.name === "trigger_make_tool") {
+              const toolResult = await callMakeTrigger(input);
+              return { type: "tool_result", tool_use_id: b.id, content: JSON.stringify(toolResult) };
+            }
+
             return { type: "tool_result", tool_use_id: b.id, content: JSON.stringify({ success: true }) };
           }));
           const assistantContent2 = Object.values(blocks2).filter(Boolean).map(b =>
@@ -1052,7 +1160,7 @@ Request: "${userText}"` }] });
             body: JSON.stringify({
               model: MODEL, max_tokens: 1000, stream: true,
               system: buildSystemPrompt(),
-              tools: TOOLS,
+              tools: toolsForRequest,
               tool_choice: { type: "auto" },
               messages: [
                 ...apiMessages,
@@ -1085,7 +1193,7 @@ Request: "${userText}"` }] });
                   finalText3 += ev.delta.text;
                   setMessages(prev => { const u=[...prev]; u[u.length-1]={ role:"assistant", content:finalText3, emailDrafts, ghlActions }; return u; });
                 }
-              } catch {}
+              } catch { /* ignore stream line */ }
             }
           }
           console.log("R3 DONE. Final text length:", finalText3.length);
@@ -1165,7 +1273,7 @@ Request: "${userText}"` }] });
         });
         await new Promise((r) => setTimeout(r, 180));
       }
-    } catch {}
+    } catch { /* TTS or playback errors */ }
     setIsSpeaking(false);
   };
 
