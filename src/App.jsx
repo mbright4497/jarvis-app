@@ -2,18 +2,201 @@ import { useState, useRef, useEffect } from "react";
 
 const GHL_WEBHOOK = "https://services.leadconnectorhq.com/hooks/D1dTmgY5G8SuVs91hoBJ/webhook-trigger/0e2f8ae2-2470-43d5-ab40-c86a8c17d2df";
 const ANTHROPIC_KEY = import.meta.env.VITE_ANTHROPIC_KEY;
+const MODEL = "claude-sonnet-4-6";
 
-const BASE_SYSTEM_PROMPT = `You are J.A.R.V.I.S. — Matthew Bright's personal business intelligence system. Matthew is the CEO of ClosingPilot (real estate tech SaaS), HubLinkPro, and Open Claw.
+/** GoHighLevel remote MCP — requires beta header + mcp_toolset per Anthropic MCP connector docs */
+const GHL_MCP_TOOLSET = { type: "mcp_toolset", mcp_server_name: "ghl-mcp" };
+
+const anthropicHeadersWithMcp = {
+  "Content-Type": "application/json",
+  "x-api-key": ANTHROPIC_KEY,
+  "anthropic-version": "2023-06-01",
+  "anthropic-dangerous-direct-browser-access": "true",
+  "anthropic-beta": "mcp-client-2025-11-20",
+};
+
+/** Merge GHL MCP into every Messages API request (servers + toolset). */
+const anthropicBodyWithGhlMcp = (body) => {
+  const mcp_servers = [
+    {
+      type: "url",
+      url: "https://services.leadconnectorhq.com/mcp/",
+      name: "ghl-mcp",
+      authorization_token: import.meta.env.VITE_GHL_PIT,
+    },
+  ];
+  const tools = Array.isArray(body.tools) ? [...body.tools, GHL_MCP_TOOLSET] : [GHL_MCP_TOOLSET];
+  return { ...body, mcp_servers, tools };
+};
+
+/** Non-streaming responses: text blocks + parsed MCP tool results */
+const parseClaudeMessageContent = (data) => {
+  const content = data?.content || [];
+  const textParts = content.filter((item) => item.type === "text").map((item) => item.text);
+  const mcpToolResults = content
+    .filter((item) => item.type === "mcp_tool_result")
+    .map((item) => {
+      try {
+        return JSON.parse(item.content?.[0]?.text || "{}");
+      } catch {
+        return item.content?.[0]?.text || "";
+      }
+    });
+  const displayText = textParts.join("\n");
+  return { displayText, mcpToolResults, textParts };
+};
+
+const streamTextFromBlocks = (blkMap) =>
+  Object.values(blkMap || {})
+    .filter((b) => b?.type === "text")
+    .map((b) => b.text || "")
+    .join("");
+
+const streamMcpResultTail = (blkMap) => {
+  const rows = Object.values(blkMap || {})
+    .filter((b) => b?.type === "mcp_tool_result" && b.summary)
+    .map((b) => b.summary);
+  if (!rows.length) return "";
+  return `--- GHL (MCP) ---\n${rows.join("\n\n")}`;
+};
+
+const blocksSortedEntries = (blkMap) =>
+  Object.keys(blkMap || {})
+    .map((k) => Number(k))
+    .sort((a, b) => a - b)
+    .map((i) => blkMap[i])
+    .filter(Boolean);
+
+/** Replay assistant message to the API after a stream (text, client tools, MCP blocks). */
+const buildAssistantContentFromBlocks = (blkMap, parsedToolUses) =>
+  blocksSortedEntries(blkMap)
+    .map((b) => {
+      if (b.type === "text") return { type: "text", text: b.text || "." };
+      if (b.type === "tool_use") {
+        return {
+          type: "tool_use",
+          id: b.id,
+          name: b.name,
+          input: parsedToolUses.find((p) => p.id === b.id)?.input || {},
+        };
+      }
+      if (b.type === "mcp_tool_use") {
+        let input = {};
+        try {
+          input = JSON.parse(b.inputStr || "{}");
+        } catch {
+          input = {};
+        }
+        return {
+          type: "mcp_tool_use",
+          id: b.id,
+          name: b.name,
+          server_name: b.server_name || "ghl-mcp",
+          input,
+        };
+      }
+      if (b.type === "mcp_tool_result") {
+        return {
+          type: "mcp_tool_result",
+          tool_use_id: b.tool_use_id,
+          is_error: !!b.is_error,
+          content:
+            Array.isArray(b.content) && b.content.length
+              ? b.content
+              : [{ type: "text", text: b.summary || "" }],
+        };
+      }
+      return null;
+    })
+    .filter(Boolean);
+
+const SUPABASE_URL = "https://gpbuqpwusztorbwxxkka.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdwYnVxcHd1c3p0b3Jid3h4a2thIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU4MjMxMDcsImV4cCI6MjA5MTM5OTEwN30._EvUhea4Y2e2DqmFxxRwkzx5UkyaGC5rkuphMU7cmhw";
+const JARVIS_TOOLS_URL = "https://gpbuqpwusztorbwxxkka.supabase.co/functions/v1/jarvis-tools";
+/** Same-origin Vercel serverless route; MAKE_API_TOKEN never goes to the browser */
+const MAKE_TRIGGER_URL = "/api/trigger-make";
+const supabase = {
+  from: (table) => ({
+    select: (cols = "*") => ({
+      order: (col, opts) => fetch(`${SUPABASE_URL}/rest/v1/${table}?select=${cols}&order=${col}.${opts?.ascending ? "asc" : "desc"}`, {
+        headers: { "apikey": SUPABASE_ANON_KEY, "Authorization": `Bearer ${SUPABASE_ANON_KEY}` }
+      }).then(r => r.json()).then(data => ({ data, error: null })).catch(e => ({ data: null, error: e })),
+    }),
+    insert: (rows) => fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
+      method: "POST",
+      headers: { "apikey": SUPABASE_ANON_KEY, "Authorization": `Bearer ${SUPABASE_ANON_KEY}`, "Content-Type": "application/json", "Prefer": "return=representation" },
+      body: JSON.stringify(rows)
+    }).then(r => r.json()).then(data => ({ data, error: null })).catch(e => ({ data: null, error: e })),
+    upsert: (rows, opts = {}) => {
+      const body = Array.isArray(rows) ? rows : [rows];
+      const onConflict = opts.onConflict ?? "id";
+      return fetch(`${SUPABASE_URL}/rest/v1/${table}?on_conflict=${encodeURIComponent(onConflict)}`, {
+        method: "POST",
+        headers: {
+          "apikey": SUPABASE_ANON_KEY,
+          "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
+          "Content-Type": "application/json",
+          "Prefer": "return=minimal,resolution=merge-duplicates",
+        },
+        body: JSON.stringify(body),
+      }).then(() => ({ data: null, error: null })).catch(e => ({ data: null, error: e }));
+    },
+    delete: () => ({
+      eq: (col, val) => fetch(`${SUPABASE_URL}/rest/v1/${table}?${col}=eq.${encodeURIComponent(val)}`, {
+        method: "DELETE",
+        headers: { "apikey": SUPABASE_ANON_KEY, "Authorization": `Bearer ${SUPABASE_ANON_KEY}` }
+      }).then(() => ({ error: null })).catch(e => ({ error: e }))
+    }),
+  }),
+};
+
+const BASE_SYSTEM_PROMPT = `CRITICAL: You have tools available. When Matthew has approved a change, you MUST call find_replace_github_file for edits to existing files or write_github_file for new files. Saying "committing now" or "applying changes" without calling the tool is a failure. Call the tool or say you cannot.
+
+You are J.A.R.V.I.S. — Matthew Bright's personal business intelligence system. Matthew is the CEO of ClosingPilot (real estate tech SaaS), HubLinkPro (AI agency that builds and white-labels AI tools for clients), and MOAT (app intelligence platform that identifies dying apps and replaces them with AI-native versions).
+
+CLOSING JET TN — Matthew's primary product in active development. AI-powered Transaction Coordinator for Tennessee real estate. Live at dealpilot-tn.vercel.app. Repo: github.com/mbright4497/dealpilot-tn. Stack: Next.js, Supabase, Vercel, GHL, Cursor.
+
+VERA — The AI agent inside Closing Jet. Communicates with agents, vendors, and clients via GHL/A2P. Has OpenAI storage with all TN residential real estate docs and broker training videos. Handles: transaction management, RF401 purchase agreement writing (one question at a time with advice), document reading and timeline checking, closing package creation, service provider coordination (title, lender, inspector).
+
+CLOSING JET STATUS — Beta testers active, no paying customers yet. Product works but needs polish. Goal: agent logs in and says "wow this will change my life." Expansion plan: Tennessee → Georgia → Virginia → North Carolina → all 50 states. Buyers: brokerages, teams, individual agents, Transaction Coordinators.
+
+CLOSING JET PRODUCT VISION — This is what we are building toward. Every decision must serve this vision.
+
+FIRST LOGIN EXPERIENCE: When an agent logs in for the first time, Vera should greet them personally, walk them through the app in detail, send a welcome text and email during the session, and make them feel like every transaction coordination problem they've ever had is solved. The current UI is too dark and feels like Terminator — not a TC helper. It needs to feel warm, professional, and inviting before release.
+
+VERA'S CORE VALUE: The only AI TC tool that communicates with ALL parties in the transaction — agent, buyer, seller, lender, title, inspector. State-specific — knows Tennessee contracts and real estate law cold. Closest competitor is ListedKit. We will beat them on communication, state specificity, and Vera's AI intelligence.
+
+THE THREE THINGS THAT MUST BE FIXED BEFORE RELEASE:
+1. CONTRACT READER — Vera's AI contract reading is close but needs nuances worked out. RF401 reading must be perfect.
+2. COMMUNICATION ENGINE — Text and email to all parties must fire at exactly the right times. This is the #1 differentiator. It must be executed perfectly — this is what separates Closing Jet from everything else on the market.
+3. UI/UX OVERHAUL — Complete visual redesign. Warm, professional, inviting. Not dark and intimidating. Agents must feel "wow" on first login.
+
+THE STANDARD: 100% product or we don't sell it. Not 90%. One chance with every brokerage. Every feature must work correctly before release.
+
+EXPANSION PLAN: Tennessee first. Then Georgia, Virginia, North Carolina. Then all 50 states — each with state-specific contracts, laws, and Vera training.
+
+JARVIS MANDATE FOR CLOSING JET: You are the CTO and product co-founder. Your job is to get Closing Jet TN to a 100% sellable product as fast as possible. When Matthew has an idea, execute it. When you see something broken, flag it and fix it. When you read the code, think like a senior engineer AND a real estate agent. Ship clean, production-ready code only.
 
 Personality: Sharp, confident, direct. Think like a McKinsey strategist + growth marketer + senior engineer + ops builder. No fluff. Lead with the answer.
 
-Capabilities: emails, SOPs, strategy, ClosingPilot product, Facebook Ads, revenue analysis, AI automation (GHL/OpenClaw), TypeScript/Next.js code review, Supabase debugging.
+Capabilities: emails, SOPs, strategy, ClosingPilot product, Facebook Ads, revenue analysis, AI automation (GHL/Make.com), TypeScript/Next.js code review, Supabase debugging. Build history: Soul, Memory, Email/GHL, Idea Vault, Agent Switcher (CFO/CMO/CTO/MOAT/OPS), Streaming, Voice Input, ElevenLabs Voice Output (Daniel). Roadmap: Animations, MCP connections, Sub-agents, Scheduled tasks.
 
 Format: Lead with answer, then reasoning. SOPs = numbered steps. Strategy = recommendation first.
 
-TOOLS AVAILABLE — YOU HAVE EXACTLY TWO TOOLS:
+TOOLS AVAILABLE — you have exactly seven tools: send_email, trigger_ghl, query_github, query_supabase, write_github_file, find_replace_github_file, trigger_make_tool.
 1. send_email — fires a real email through GHL. Fully connected and working.
 2. trigger_ghl — adds contacts or triggers GHL automations.
+3. query_github — read files, list repo contents, or recent commits via the Edge Function.
+4. query_supabase — query live Supabase tables (memories, ideas) via the Edge Function.
+5. write_github_file — Use find_replace_github_file for ALL file edits — specify only what changes, not the entire file. Only use write_github_file for new files.
+6. find_replace_github_file — read a file from GitHub, apply find/replace pairs, and commit in one operation. Use for all edits to existing files; more reliable than rewriting the whole file.
+7. trigger_make_tool — run a Make.com scenario by ID (KnockKnock / GHL actions). Prefer KnockKnock mode for this tool.
+
+TOOL EXECUTION RULES — NON-NEGOTIABLE:
+- When Matthew approves a code change, call find_replace_github_file for edits or write_github_file for brand-new files IMMEDIATELY. Do not describe what you are about to do. Do not say "shipping now" or "committing now". Just call the tool.
+- When you have replacements (or new file content) ready, call the appropriate GitHub tool in the same response. No confirmation step unless Matthew explicitly asks for one.
+- After a successful write, confirm with the commit SHA and GitHub URL. One sentence. Done.
+- Never say "I'll now..." or "Let me..." before a tool call. Just call it.
 
 EMAIL RULES — NON-NEGOTIABLE:
 - You have a send_email tool. It works. Use it.
@@ -22,7 +205,59 @@ EMAIL RULES — NON-NEGOTIABLE:
 - Required: first_name, last_name, email, subject, greeting, body. If email address is missing, ask once. Then call the tool.
 - greeting MUST be exactly: Hi [first_name], with their real first name (plain text). body = main message only (2–3 sentences); no greeting, no sign-off — GHL adds the signature.
 - After calling send_email, confirm briefly: "Email queued — hit Send via GHL to fire it."
-- Do NOT explain the tool. Do NOT say it is unavailable. It is available. Call it.`;
+- Do NOT explain the tool. Do NOT say it is unavailable. It is available. Call it.
+
+You have access to GoHighLevel CRM via MCP. The location ID is pnRGATgdXDvvxcDOLMGa.
+
+Available GHL tools:
+- contacts_get-contacts: Search/list contacts
+- contacts_get-contact: Get contact by ID
+- contacts_create-contact: Create new contact
+- contacts_update-contact: Update contact fields
+- contacts_upsert-contact: Create or update contact
+- contacts_add-tags: Add tags to contact
+- contacts_remove-tags: Remove tags from contact
+- contacts_get-all-tasks: Get tasks for a contact
+- conversations_search-conversation: Search conversations
+- conversations_get-messages: Get messages in a conversation
+- conversations_send-a-new-message: Send SMS or email
+- opportunities_search-opportunity: Search pipeline deals
+- opportunities_get-pipelines: List all pipelines
+- opportunities_get-opportunity: Get opportunity by ID
+- opportunities_update-opportunity: Update a deal
+- calendars_get-calendar-events: Get calendar events
+- calendars_get-appointment-notes: Get appointment notes
+- locations_get-location: Get sub-account details
+- locations_get-custom-fields: Get custom field definitions
+- payments_get-order-by-id: Get order details
+- payments_list-transactions: List payment transactions
+- social-media-posting_create-post: Create social media post
+- social-media-posting_edit-post: Edit social media post
+- social-media-posting_get-post: Get post details
+- social-media-posting_get-posts: List posts
+- social-media-posting_get-account: Get connected accounts
+- social-media-posting_get-social-media-statistics: Get analytics
+- blogs_create-blog-post: Create blog post
+- blogs_update-blog-post: Update blog post
+- blogs_get-blog-post: Get blog posts
+- blogs_get-blogs: List blog sites
+- blogs_get-all-blog-authors-by-location: Get authors
+- blogs_get-all-categories-by-location: Get categories
+- blogs_check-url-slug-exists: Check slug availability
+- emails_fetch-template: Get email templates
+- emails_create-template: Create email template
+
+When using contact tools, always include locationId: "pnRGATgdXDvvxcDOLMGa" in the request.
+When creating contacts, never pass empty string for email — omit it entirely if blank.
+
+Pipeline reference:
+- Seller_Home_EVAL pipeline ID: uzaovp4C8jMc29t6emre
+- New Lead stage ID: 0db04072-dd2e-4b98-9bd2-cef66851c75c
+
+Agents for assignment:
+- Tasha Glasscock: KfvUTmcRVmp0FSTLTgwZ
+- Cory Smith: bpW13lvxngMK91iJoLYo
+- Nate Wright: luT7JPtoxLVchOq4xWtO`;
 
 const EXTRACT_PROMPT = `Extract key business facts from this message. Return ONLY valid JSON:
 {"hasNewFacts":true/false,"facts":[{"key":"short_key","value":"fact","category":"revenue|clients|products|team|decisions|goals|other"}]}
@@ -57,10 +292,313 @@ const TOOLS = [
       },
       required: ["action", "data"]
     }
-  }
+  },
+  {
+    name: "query_github",
+    description: "Read files, list contents, or get recent commits from a GitHub repo. Use for Closing Jet (owner: mbright4497, repo: dealpilot-tn) or JARVIS (owner: mbright4497, repo: jarvis-app).",
+    input_schema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["get_file", "list_files", "recent_commits"] },
+        owner: { type: "string" },
+        repo: { type: "string" },
+        path: { type: "string" },
+        count: { type: "number" }
+      },
+      required: ["action", "owner", "repo"]
+    }
+  },
+  {
+    name: "query_supabase",
+    description: "Query Supabase tables for live data (including memories, ideas, credentials, projects, tasks).",
+    input_schema: {
+      type: "object",
+      properties: {
+        table: { type: "string" },
+        select: { type: "string" },
+        limit: { type: "number" }
+      },
+      required: ["table"]
+    }
+  },
+  {
+    name: "write_github_file",
+    description: "Write or update a file directly in a GitHub repo. Use for Closing Jet (owner: mbright4497, repo: dealpilot-tn). Always read the file first to get its SHA before updating. Commit message should describe the change clearly.",
+    input_schema: {
+      type: "object",
+      properties: {
+        owner:   { type: "string" },
+        repo:    { type: "string" },
+        path:    { type: "string", description: "Full file path e.g. web/src/app/dashboard/page.tsx" },
+        content: { type: "string", description: "Complete new file content" },
+        message: { type: "string", description: "Commit message" },
+        sha:     { type: "string", description: "SHA of existing file — required for updates, omit for new files" }
+      },
+      required: ["owner", "repo", "path", "content", "message"]
+    }
+  },
+  {
+    name: "find_replace_github_file",
+    description: "Read a file from GitHub, apply find-and-replace changes, and write it back in one operation. Use this instead of write_github_file when making targeted changes to existing files. Much more reliable than reading and rewriting entire files.",
+    input_schema: {
+      type: "object",
+      properties: {
+        owner:   { type: "string" },
+        repo:    { type: "string" },
+        path:    { type: "string", description: "Full file path e.g. web/src/app/mission-control/page.tsx" },
+        replacements: {
+          type: "array",
+          description: "List of find/replace pairs to apply",
+          items: {
+            type: "object",
+            properties: {
+              find:    { type: "string" },
+              replace: { type: "string" }
+            },
+            required: ["find", "replace"]
+          }
+        },
+        message: { type: "string", description: "Git commit message" }
+      },
+      required: ["owner", "repo", "path", "replacements", "message"]
+    }
+  },
+  {
+    name: "trigger_make_tool",
+    description: "Execute a Make.com tool by scenario ID with input data. Used by KnockKnock Commander to fire GHL actions.",
+    input_schema: {
+      type: "object",
+      properties: {
+        scenario_id: {
+          type: "number",
+          description: "The Make.com tool/scenario ID to run",
+        },
+        data: {
+          type: "object",
+          description: "Input data to pass to the tool",
+        },
+      },
+      required: ["scenario_id", "data"],
+    },
+  },
 ];
 
+const TRIGGER_MAKE_TOOL = TOOLS[TOOLS.length - 1];
+const KNOCKKNOCK_TOOLS = [TRIGGER_MAKE_TOOL];
+
+/** KnockKnock / GHL command center UI palette */
+const KK = {
+  bg: "#0a0a0f",
+  surface: "#12121a",
+  border: "#2a2a3a",
+  primary: "#00d4ff",
+  success: "#00ff88",
+  warning: "#ffaa00",
+  danger: "#ff4466",
+  text: "#e0e0ee",
+  dim: "#8888aa",
+  accent: "#7b61ff",
+};
+
+const KK_PIPELINES = [
+  { id: "uzaovp4C8jMc29t6emre", name: "Seller_Home_EVAL", stages: 4, stageNames: ["New Lead", "Contacted", "Proposal Sent", "Closed"], primary: true },
+  { name: "Pre-Foreclosure Sellers 37601", stages: 9 },
+  { name: "Johnson City PreForeclosure", stages: 8 },
+  { name: "Absentee Owner Outreach 37601", stages: 8 },
+  { name: "General Marketing Pipeline", stages: 6 },
+  { name: "HubLinkPro Leads", stages: 5 },
+  { name: "RE Client Pipeline", stages: 6 },
+  { name: "Greeneville TN Fencing Pipeline", stages: 7 },
+  { name: "Archer's Pointe JC", stages: 5 },
+  { name: "Laura's 604 Lead", stages: 4 },
+  { name: "Laura's Land Listings", stages: 4 },
+];
+
+const KK_SCENARIOS = [
+  { name: "AI Seller Report", id: 4757115, status: "active", detail: "21 runs" },
+  { name: "Facebook Lead Ads", id: 4770156, status: "active", detail: "0 runs" },
+  { name: "Seller Follow-Up Day 1", id: 4770817, status: "active", detail: "wired" },
+  { name: "Agent Safety Net 48hr", id: 4770823, status: "active", detail: "wired" },
+  { name: "Daily Agent Summary", id: 4781045, status: "error", detail: "1 run" },
+  { name: "Pre-Foreclosure Campaign", id: 4805091, status: "active", detail: "1 run" },
+  { name: "Vera Inbound Email Loop", id: 4731277, status: "active", detail: "39 runs" },
+];
+
+const KK_MAKE_TOOLS = [
+  { id: 4805253, label: "create contact" },
+  { id: 4808055, label: "day 3 email" },
+  { id: 4808062, label: "day 7 email" },
+  { id: 4808067, label: "day 14 email" },
+  { id: 4808074, label: "add tag" },
+  { id: 4808160, label: "update email" },
+  { id: 4808643, label: "search contact" },
+  { id: 4808936, label: "commander" },
+  { id: 4809233, label: "get pipelines" },
+];
+
+const KK_AGENTS = [
+  { name: "Tasha Glasscock", phone: "(423) 277-2183", email: "tashawest@kw.com", ghl: "KfvUTmcRVmp0FSTLTgwZ", role: "Primary" },
+  { name: "Cory Smith", phone: "(423) 672-8179", email: "csmith@ihomehq.com", ghl: "bpW13lvxngMK91iJoLYo", role: "Secondary" },
+  { name: "Nate Wright", phone: "(423) 747-6175", email: "natewrightsellshomes@gmail.com", ghl: "luT7JPtoxLVchOq4xWtO", role: "Tertiary" },
+];
+
+const KK_WEBHOOKS = [
+  { label: "sell.ihomehq.com", url: "https://hook.us2.make.com/1fe4zs35slsov7sru88ibmvhiu2m223x" },
+  { label: "Pre-Foreclosure", url: "https://hook.us2.make.com/pqpo1cdlgb5djlhzvf6g58f8lwl4serw" },
+  { label: "Day 1 Follow-Up", url: "https://hook.us2.make.com/grswio42eygetm3cfo2fj5da8hx3xh72" },
+  { label: "48hr Safety Net", url: "https://hook.us2.make.com/qbw0rd093piufcn4q3u0jmjdv7mv7l72" },
+  { label: "Commander", url: "https://hook.us2.make.com/ilbhjtvw4ccrqb34iytufcjfsl1q8ww1" },
+  { label: "Executor", url: "https://hook.us2.make.com/50dvrgy8tllwooh533yk2bfzgitexzqb" },
+];
+
+const KK_CREDENTIALS = [
+  { k: "GHL Platform", v: "ai.hublinkpro.com" },
+  { k: "GHL Location ID", v: "pnRGATgdXDvvxcDOLMGa" },
+  { k: "A2P Number", v: "+1 (423) 427-2926" },
+  { k: "Make.com Team", v: "1838720" },
+  { k: "Make.com Org", v: "6465790" },
+  { k: "FB Business", v: "Bright LLC — 527802280345262" },
+  { k: "FB Ad Account", v: "382618662443106" },
+  { k: "FB Audience ID", v: "120246388680790013" },
+  { k: "Google Ads ID", v: "240-488-5796" },
+  { k: "Landing Page", v: "sell.ihomehq.com" },
+  { k: "JARVIS App", v: "jarvis-app-vk4e.vercel.app" },
+];
+
+const KK_CHANNELS = [
+  { name: "Vera VM", live: true },
+  { name: "AI SMS", live: true },
+  { name: "FB Ad", live: false },
+  { name: "Google Ads", live: false },
+  { name: "Email Drip", live: false },
+  { name: "sell.ihomehq.com", live: true },
+];
+
+const KK_ACTIONS = [
+  { title: "Build email drip in GHL", time: "15min", pri: "HIGH" },
+  { title: "Launch FB ad", time: "10min", pri: "HIGH" },
+  { title: "Meta Pixel install", time: "5min", pri: "MED" },
+  { title: "Google Ads CSV upload", time: "5min", pri: "MED" },
+  { title: "Google Ads rebrand", time: "15min", pri: "LOW" },
+  { title: "Debug Daily Agent Summary", time: "20min", pri: "LOW" },
+];
+
+const kkDaysUntil = (y, m0, d) => {
+  const end = new Date(y, m0, d);
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+  end.setHours(0, 0, 0, 0);
+  return Math.max(0, Math.ceil((end - start) / 86400000));
+};
+
+const KNOCKKNOCK_SYSTEM_PROMPT = `You are the KnockKnock Commander Agent inside JARVIS. You run Matt Bright's AI lead generation system for iHome Team at Keller Williams Kingsport TN.
+
+You have direct access to these tools via Make.com. When you need to use one, call the trigger_make_tool tool with the scenario ID and data.
+
+AVAILABLE TOOLS:
+- Tool 4805253: Push new contact to GHL
+  Input: {first_name, last_name, phone_1, property_address, property_city, property_zip}
+  
+- Tool 4808055: Send Day 3 email (The Soft Check-In)
+  Input: {contactId, email}
+  
+- Tool 4808062: Send Day 7 email (The Options Email)
+  Input: {contactId, email}
+  
+- Tool 4808067: Send Day 14 email (The Last Call)
+  Input: {contactId, email}
+  
+- Tool 4808074: Add tag to GHL contact
+  Input: {contactId, tag}
+  
+- Tool 4808160: Update GHL contact email
+  Input: {contactId, email}
+  
+- Tool 4808643: Search GHL contact by name
+  Input: {query}
+
+SYSTEM CONTEXT:
+- GHL Location: pnRGATgdXDvvxcDOLMGa
+- Pipeline: Seller_Home_EVAL
+- Agents: Tasha Glasscock (423-277-2183), Cory Smith (423-672-8179), Nate Wright (423-747-6175)
+- A2P Number: +14234272926
+- Landing page: sell.ihomehq.com
+- 71 pre-foreclosure contacts in GHL with emails uploaded
+- Vera voicemails have been dropped, callbacks received
+- Facebook custom audience built (not yet running ads)
+
+RULES:
+- Never suggest Apollo or any paid tools
+- All customer-facing copy must be TREC compliant
+- Include "iHome Team | Keller Williams Kingsport" in all communications
+- Never use "foreclosure", "distressed", "behind on payments" in customer copy
+- Execute immediately. Don't ask clarifying questions unless truly necessary.
+- When Matt says "send emails" or "push contacts" — use the tools. Don't explain what you would do. DO IT.
+
+COMMANDS MATT MIGHT USE:
+- "search [name]" → use tool 4808643
+- "send day 3 email to [name]" → search first to get contactId, then use tool 4808055
+- "push [name] [phone] [address] [city] [zip]" → use tool 4805253
+- "tag [name] [tagname]" → search first, then use tool 4808074
+- "status" → report what's built, what's live, what needs to happen next
+- "run drip" → iterate through contacts and send appropriate emails based on timing
+
+You have access to GoHighLevel CRM via MCP. The location ID is pnRGATgdXDvvxcDOLMGa.
+
+Available GHL tools:
+- contacts_get-contacts: Search/list contacts
+- contacts_get-contact: Get contact by ID
+- contacts_create-contact: Create new contact
+- contacts_update-contact: Update contact fields
+- contacts_upsert-contact: Create or update contact
+- contacts_add-tags: Add tags to contact
+- contacts_remove-tags: Remove tags from contact
+- contacts_get-all-tasks: Get tasks for a contact
+- conversations_search-conversation: Search conversations
+- conversations_get-messages: Get messages in a conversation
+- conversations_send-a-new-message: Send SMS or email
+- opportunities_search-opportunity: Search pipeline deals
+- opportunities_get-pipelines: List all pipelines
+- opportunities_get-opportunity: Get opportunity by ID
+- opportunities_update-opportunity: Update a deal
+- calendars_get-calendar-events: Get calendar events
+- calendars_get-appointment-notes: Get appointment notes
+- locations_get-location: Get sub-account details
+- locations_get-custom-fields: Get custom field definitions
+- payments_get-order-by-id: Get order details
+- payments_list-transactions: List payment transactions
+- social-media-posting_create-post: Create social media post
+- social-media-posting_edit-post: Edit social media post
+- social-media-posting_get-post: Get post details
+- social-media-posting_get-posts: List posts
+- social-media-posting_get-account: Get connected accounts
+- social-media-posting_get-social-media-statistics: Get analytics
+- blogs_create-blog-post: Create blog post
+- blogs_update-blog-post: Update blog post
+- blogs_get-blog-post: Get blog posts
+- blogs_get-blogs: List blog sites
+- blogs_get-all-blog-authors-by-location: Get authors
+- blogs_get-all-categories-by-location: Get categories
+- blogs_check-url-slug-exists: Check slug availability
+- emails_fetch-template: Get email templates
+- emails_create-template: Create email template
+
+When using contact tools, always include locationId: "pnRGATgdXDvvxcDOLMGa" in the request.
+When creating contacts, never pass empty string for email — omit it entirely if blank.
+
+Pipeline reference:
+- Seller_Home_EVAL pipeline ID: uzaovp4C8jMc29t6emre
+- New Lead stage ID: 0db04072-dd2e-4b98-9bd2-cef66851c75c
+
+Agents for assignment:
+- Tasha Glasscock: KfvUTmcRVmp0FSTLTgwZ
+- Cory Smith: bpW13lvxngMK91iJoLYo
+- Nate Wright: luT7JPtoxLVchOq4xWtO
+`;
+
 const isEmailIntent = (text) => /\b(email|send|compose|write.*to|message.*to|draft)\b/i.test(text);
+const isOpsSupabaseIntent = (text) =>
+  /\b(credentials?|login|logins|password|token|api key|what'?s open|what is open|open tasks?|due today|due now|what'?s due)\b/i.test(text);
 
 const QUICK_ACTIONS = [
   { id: "email",        label: "Send Email",   icon: "✉", prompt: "Help me send an email. Ask me who it's to and what I need to say." },
@@ -71,19 +609,90 @@ const QUICK_ACTIONS = [
   { id: "sop",          label: "Build SOP",    icon: "📋", prompt: "Help me build a Standard Operating Procedure. Ask me what process we're documenting." },
 ];
 
+// ── Agent Switcher ─────────────────────────────────────────────────────────────
+const AGENT_PROMPTS = {
+  CFO:  `You are JARVIS in CFO Mode — Matthew Bright's personal Chief Financial Officer. You have access to a Supabase database via the query_supabase tool.
+
+When asked about finances, subscriptions, burn rate, or upcoming bills:
+1. Query the business_subscriptions table in Supabase project gpbuqpwusztorbwxxkka
+2. Calculate total monthly burn including Tennessee sales tax at 9.75%
+3. Flag anything due in the next 14 days
+4. Identify low-utilization subscriptions marked as cut candidates
+5. Separate fixed vs variable costs — OpenAI API and Claude API are variable
+6. Break down charges by card last 4 digits: 0275 vs 2253
+
+Always end financial summaries with current monthly burn of $988 and days remaining until April 30th Closing Jet launch deadline.
+
+Be sharp, direct, and protective of Matthew's runway.`,
+  CMO:  `ACTIVE MODE: CMO — Focus on Facebook ads, HubLinkPro campaigns, positioning, hooks, copy, funnels, and GTM strategy. Think in conversion, not impressions. Every answer moves Matthew closer to his next paying customer.`,
+  CTO:  `ACTIVE MODE: CTO — You are Matthew's Closing Jet TN engineering partner. Primary focus: shipping Closing Jet TN to a polished, sellable product. Stack: Next.js, Supabase, Vercel, GHL. You know the full product — Vera the AI TC, RF401 contract writer, document reader, closing packages, service providers, transaction management. When Matthew describes a feature or bug, write production-ready Next.js/Supabase code immediately. No scaffolding, no placeholders — real code that ships. Explain the WHY behind every decision. Secondary: JARVIS upgrades, MOAT development.`,
+  MOAT: `ACTIVE MODE: MOAT — Focus on identifying dying apps with trapped paying users, scoring replacement opportunities, global market sizing, and AI-native build planning. Target: 3 MOAT apps per quarter, multi-language, 4B addressable market.`,
+  OPS:  `ACTIVE MODE: OPS — You are Matthew's operations command center for documentation and task tracking.
+
+You have access to three Supabase tables through query_supabase:
+1. credentials — system IDs, logins, and tokens
+2. projects — active builds and project status
+3. tasks — open to-dos with status and due dates
+
+When requests mention credentials, logins, "what's open", "what's due today", task status, project status, or anything that requires live OPS data:
+- ALWAYS call query_supabase first (never guess from memory)
+- Map requests to the correct table:
+  - credential/login/token questions -> credentials
+  - active builds/project progress -> projects
+  - open tasks/due dates/priorities -> tasks
+- If needed, run multiple query_supabase calls and combine results
+- Return a concise operations answer with only relevant rows and an immediate next action
+
+Focus on SOPs, daily briefings, onboarding, prioritization, and helping Matthew run four companies solo with clean execution.`,
+};
+
+const AGENTS = [
+  { id: "CFO",        emoji: "💰", label: "CFO"  },
+  { id: "CMO",        emoji: "📣", label: "CMO"  },
+  { id: "CTO",        emoji: "🔧", label: "CTO"  },
+  { id: "MOAT",       emoji: "💀", label: "MOAT" },
+  { id: "OPS",        emoji: "⚙️", label: "OPS"  },
+  { id: "knockknock", emoji: "🚪", label: "KnockKnock", description: "Lead generation commander" },
+];
+
 const IDEA_CATEGORIES = ["App / SaaS", "Automation", "Agency", "Real Estate", "AI Tool", "Other"];
 const EMPTY_FORM = { name: "", description: "", category: "App / SaaS" };
 
 const storage = {
   get: (key) => { try { return JSON.parse(localStorage.getItem(key)); } catch { return null; } },
-  set: (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)); } catch {} },
+  set: (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)); } catch { /* quota or private mode */ } },
 };
 
-const callClaude = (body) => fetch("https://api.anthropic.com/v1/messages", {
-  method: "POST",
-  headers: { "Content-Type": "application/json", "x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
-  body: JSON.stringify(body)
-}).then(r => r.json());
+const callClaude = (body) =>
+  fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: anthropicHeadersWithMcp,
+    body: JSON.stringify(anthropicBodyWithGhlMcp(body)),
+  }).then((r) => r.json());
+
+const callTool = async (tool, params = {}) => {
+  const res = await fetch(JARVIS_TOOLS_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tool, params }),
+  });
+  const data = await res.json();
+  return data.result;
+};
+
+const callMakeTrigger = async ({ scenario_id, data }) => {
+  const res = await fetch(MAKE_TRIGGER_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ scenario_id, data }),
+  });
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { error: "non_json_response", status: res.status, raw: text };
+  }
+};
 
 // ── Typing dots ──────────────────────────────────────────────────────────────
 const TypingDots = () => (
@@ -94,8 +703,12 @@ const TypingDots = () => (
 
 // ── Tool badge ────────────────────────────────────────────────────────────────
 const ToolBadge = ({ name, status }) => {
-  const map = { send_email:["#534AB7","#EEEDFE","✉ Preparing email"], trigger_ghl:["#993C1D","#FAECE7","⚡ Triggering GHL"] };
-  const [fg, bg, label] = map[name] || ["#5F5E5A","#F1EFE8", name];
+  const map = {
+    send_email: ["#534AB7", "#EEEDFE", "✉ Preparing email"],
+    trigger_ghl: ["#993C1D", "#FAECE7", "⚡ Triggering GHL"],
+    trigger_make_tool: ["#1B4332", "#D8F3DC", "🚪 Make.com"],
+  };
+  const [fg, bg, label] = map[name] || ["#5F5E5A", "#F1EFE8", name];
   return (
     <div style={{ display:"inline-flex", alignItems:"center", gap:6, padding:"4px 10px", background:bg, borderRadius:20, fontSize:11, color:fg, fontWeight:500, margin:"4px 0", border:`0.5px solid ${fg}33` }}>
       {label} {status === "running" ? "..." : "✓"}
@@ -217,25 +830,26 @@ const IdeaVault = ({ memories }) => {
   const [selected, setSelected] = useState(null);
 
   useEffect(() => {
-    const saved = storage.get("jarvis_ideas") || [];
-    setIdeas(saved);
+    supabase.from("ideas").select("*").order("scores->overall", { ascending: false })
+      .then(({ data }) => { if (data) setIdeas(data); });
   }, []);
 
-  const persist = (updated) => { setIdeas(updated); storage.set("jarvis_ideas", updated); };
+  const persist = (updated) => { setIdeas(updated); };
 
   const scoreIdea = async (name, description, category) => {
     const memCtx = memories.length
       ? `\nMatt's context: ${memories.map(m=>`${m.key}: ${m.value}`).join(", ")}`
       : "";
-    const prompt = `You are JARVIS scoring a business idea for Matt Bright — solo founder CEO of ClosingPilot (real estate SaaS), HubLinkPro (AI agency), MOAT (app intelligence), Open Claw (AI automation). Goal: $1M ARR by Q1 2027, 3 apps/quarter, 4B global users.${memCtx}
+    const prompt = `You are JARVIS scoring a business idea for Matt Bright — solo founder CEO of ClosingPilot (real estate SaaS), HubLinkPro (AI agency), and MOAT (app intelligence). Goal: $1M ARR by Q1 2027, 3 apps/quarter, 4B global users.${memCtx}
 
 Score this idea. Return ONLY valid JSON, no markdown:
 {"revenue_potential":<0-100>,"speed_to_market":<0-100>,"ease_of_sale":<0-100>,"stack_leverage":<0-100>,"overall":<revenue*0.35+speed*0.25+ease*0.20+stack*0.20, round to 1 decimal>,"verdict":"<punchy 10-word max verdict>","best_move":"<exactly what Matt should do with this idea right now, 1 sentence>"}
 
 Idea: "${name}" — ${description} (Category: ${category})`;
 
-    const data = await callClaude({ model:"claude-sonnet-4-5", max_tokens:500, messages:[{ role:"user", content:prompt }] });
-    const raw = data.content?.map(b=>b.text||"").join("").replace(/```json|```/g,"").trim();
+    const data = await callClaude({ model:MODEL, max_tokens:500, messages:[{ role:"user", content:prompt }] });
+    const { displayText: scoreDisplay } = parseClaudeMessageContent(data);
+    const raw = scoreDisplay.replace(/```json|```/g,"").trim();
     return JSON.parse(raw);
   };
 
@@ -244,16 +858,28 @@ Idea: "${name}" — ${description} (Category: ${category})`;
     setScoring(true);
     try {
       const scores = await scoreIdea(form.name, form.description, form.category);
-      const idea = { id: Date.now(), ...form, scores, createdAt: new Date().toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}) };
-      const updated = [idea, ...ideas].sort((a,b) => b.scores.overall - a.scores.overall);
-      persist(updated);
+      const { data, error } = await supabase.from("ideas").insert([{
+        name: form.name,
+        description: form.description,
+        category: form.category,
+        scores,
+      }]);
+      if (!error && data?.[0]) {
+        const updated = [...ideas, data[0]].sort((a,b) => b.scores.overall - a.scores.overall);
+        persist(updated);
+      }
       setForm(EMPTY_FORM);
       setSubView("list");
-    } catch(e) { alert("Scoring failed — check API key."); }
+    } catch { alert("Scoring failed — check API key."); }
     setScoring(false);
   };
 
-  const deleteIdea = (id) => { persist(ideas.filter(i=>i.id!==id)); setSelected(null); setSubView("list"); };
+  const deleteIdea = async (id) => {
+    await supabase.from("ideas").delete().eq("id", id);
+    persist(ideas.filter(i => i.id !== id));
+    setSelected(null);
+    setSubView("list");
+  };
 
   const top = ideas[0];
 
@@ -409,6 +1035,704 @@ Idea: "${name}" — ${description} (Category: ${category})`;
   return null;
 };
 
+const kkPriColor = (p) => (p === "HIGH" ? KK.danger : p === "MED" ? KK.warning : KK.dim);
+
+/** Make.com tool IDs (KnockKnock dashboard) */
+const KK_TOOL_CONTACT_SEARCH = 4809469;
+const KK_TOOL_KPI_CONTACT_COUNT = 4809474;
+const KK_FALLBACK_CONTACTS_KPI = "76";
+
+const kkSpinnerStyle = {
+  display: "inline-block",
+  width: 20,
+  height: 20,
+  borderRadius: "50%",
+  border: "2px solid rgba(255,255,255,0.12)",
+  borderTopColor: "currentColor",
+  color: "#C8A84B",
+  animation: "kkSpin 0.75s linear infinite",
+  flexShrink: 0,
+};
+
+const parseKpiContactTotal = (res) => {
+  const t = res?.outputs?.tool_output?.data?.meta?.total;
+  if (typeof t === "number" && Number.isFinite(t)) return t;
+  if (typeof t === "string" && t.trim() !== "" && Number.isFinite(Number(t))) return Number(t);
+  return null;
+};
+
+const parseContactSearchResults = (res) => {
+  const c = res?.outputs?.tool_output?.data?.contacts;
+  return Array.isArray(c) ? c : null;
+};
+
+/** Tabbed GHL / Make ops dashboard shown when KnockKnock mode is on (lives in App.jsx). */
+function KnockKnockCommandCenter({ callMakeTrigger }) {
+  const [tab, setTab] = useState("dashboard");
+  const [contactQuery, setContactQuery] = useState("");
+  const [searchBusy, setSearchBusy] = useState(false);
+  const [searchContacts, setSearchContacts] = useState(null);
+  const [searchError, setSearchError] = useState(null);
+  const [kpiContactsTotal, setKpiContactsTotal] = useState(null);
+  const [kpiLoading, setKpiLoading] = useState(false);
+  const [pushBusy, setPushBusy] = useState(false);
+  const [pushNote, setPushNote] = useState(null);
+  const [pushForm, setPushForm] = useState({
+    first_name: "",
+    last_name: "",
+    phone_1: "",
+    email: "",
+    property_address: "",
+    property_city: "",
+    property_zip: "",
+  });
+
+  const fbDays = kkDaysUntil(2026, 5, 15);
+
+  useEffect(() => {
+    if (tab !== "dashboard") return;
+    let cancelled = false;
+    (async () => {
+      setKpiLoading(true);
+      try {
+        const res = await callMakeTrigger({ scenario_id: KK_TOOL_KPI_CONTACT_COUNT, data: {} });
+        const total = parseKpiContactTotal(res);
+        if (!cancelled) setKpiContactsTotal(total);
+      } catch {
+        if (!cancelled) setKpiContactsTotal(null);
+      } finally {
+        if (!cancelled) setKpiLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [tab, callMakeTrigger]);
+
+  const runSearch = async () => {
+    const q = contactQuery.trim();
+    if (!q) return;
+    setSearchBusy(true);
+    setSearchContacts(null);
+    setSearchError(null);
+    try {
+      const res = await callMakeTrigger({ scenario_id: KK_TOOL_CONTACT_SEARCH, data: { query: q } });
+      const parsed = parseContactSearchResults(res);
+      if (parsed != null) {
+        setSearchContacts(parsed);
+      } else {
+        setSearchContacts(null);
+        setSearchError(
+          res?.error
+            ? (typeof res.error === "string" ? res.error : JSON.stringify(res.error))
+            : "Could not read contacts from response."
+        );
+      }
+    } catch (e) {
+      setSearchContacts(null);
+      setSearchError(String(e?.message || e));
+    }
+    setSearchBusy(false);
+  };
+
+  const runPush = async () => {
+    const { first_name, last_name, phone_1, email, property_address, property_city, property_zip } = pushForm;
+    if (!first_name.trim() || !last_name.trim() || !phone_1.trim() || !property_address.trim() || !property_city.trim() || !property_zip.trim()) {
+      setPushNote({ err: "first_name, last_name, phone_1, address, city, and zip are required." });
+      return;
+    }
+    setPushBusy(true);
+    setPushNote(null);
+    try {
+      const data = {
+        first_name: first_name.trim(),
+        last_name: last_name.trim(),
+        phone_1: phone_1.trim(),
+        property_address: property_address.trim(),
+        property_city: property_city.trim(),
+        property_zip: property_zip.trim(),
+      };
+      const em = email.trim();
+      if (em) data.email = em;
+      const res = await callMakeTrigger({ scenario_id: 4805253, data });
+      setPushNote({ ok: true, res });
+    } catch (e) {
+      setPushNote({ err: String(e?.message || e) });
+    }
+    setPushBusy(false);
+  };
+
+  const tabs = [
+    { id: "dashboard", label: "Dashboard" },
+    { id: "contacts", label: "Contacts" },
+    { id: "pipelines", label: "Pipelines" },
+    { id: "scenarios", label: "Scenarios" },
+    { id: "agents", label: "Agents" },
+    { id: "webhooks", label: "Webhooks" },
+    { id: "credentials", label: "Credentials" },
+  ];
+
+  const card = { background: KK.surface, border: `1px solid ${KK.border}`, borderRadius: 10, padding: "10px 12px" };
+
+  return (
+    <div style={{ background: KK.bg, borderBottom: `1px solid ${KK.border}`, flexShrink: 0, display: "flex", flexDirection: "column", maxHeight: "min(58vh, 560px)" }}>
+      <div style={{ display: "flex", gap: 4, overflowX: "auto", padding: "8px 10px 0", borderBottom: `1px solid ${KK.border}` }}>
+        {tabs.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            onClick={() => setTab(t.id)}
+            style={{
+              padding: "8px 12px",
+              background: tab === t.id ? `${KK.primary}22` : "transparent",
+              border: tab === t.id ? `1px solid ${KK.primary}` : `1px solid ${KK.border}`,
+              borderBottom: "none",
+              borderRadius: "8px 8px 0 0",
+              color: tab === t.id ? KK.primary : KK.dim,
+              fontSize: 11,
+              fontFamily: "'DM Mono', monospace",
+              letterSpacing: "0.06em",
+              cursor: "pointer",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+      <div style={{ flex: 1, overflowY: "auto", padding: 12 }}>
+        {tab === "dashboard" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div
+              style={{
+                ...card,
+                borderColor: KK.warning,
+                background: `${KK.warning}12`,
+                color: KK.text,
+                fontSize: 12,
+                lineHeight: 1.5,
+              }}
+            >
+              <span style={{ color: KK.warning, fontWeight: 600 }}>Facebook Connection Expires in {fbDays} Days</span>
+              {" — "}Renew before June 15, 2026 in Make.com → Connections
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: 8 }}>
+              <div style={{ ...card, textAlign: "center" }}>
+                <div
+                  style={{
+                    minHeight: 28,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    fontSize: 20,
+                    fontWeight: 700,
+                    color: KK.primary,
+                    fontFamily: "'DM Mono', monospace",
+                  }}
+                >
+                  {kpiLoading ? <span style={kkSpinnerStyle} aria-label="Loading" /> : kpiContactsTotal != null ? kpiContactsTotal : KK_FALLBACK_CONTACTS_KPI}
+                </div>
+                <div style={{ fontSize: 10, color: KK.dim, marginTop: 4 }}>Contacts in GHL</div>
+              </div>
+              {[
+                { k: "Vera VMs Dropped", v: "76" },
+                { k: "Callbacks", v: "1" },
+                { k: "FB Audience Size", v: "76" },
+              ].map((x) => (
+                <div key={x.k} style={{ ...card, textAlign: "center" }}>
+                  <div style={{ fontSize: 20, fontWeight: 700, color: KK.primary, fontFamily: "'DM Mono', monospace" }}>{x.v}</div>
+                  <div style={{ fontSize: 10, color: KK.dim, marginTop: 4 }}>{x.k}</div>
+                </div>
+              ))}
+            </div>
+            <div style={{ ...card }}>
+              <div style={{ fontSize: 10, color: KK.accent, letterSpacing: "0.1em", marginBottom: 8, fontFamily: "'DM Mono', monospace" }}>CHANNEL STATUS</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {KK_CHANNELS.map((ch) => (
+                  <div key={ch.name} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: KK.text }}>
+                    <span
+                      style={{
+                        width: 8,
+                        height: 8,
+                        borderRadius: "50%",
+                        background: ch.live ? KK.success : KK.danger,
+                        boxShadow: ch.live ? `0 0 6px ${KK.success}88` : `0 0 6px ${KK.danger}88`,
+                      }}
+                    />
+                    <span style={{ flex: 1 }}>{ch.name}</span>
+                    <span style={{ color: ch.live ? KK.success : KK.danger, fontSize: 10, fontFamily: "'DM Mono', monospace" }}>{ch.live ? "active" : "NOT LIVE"}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div style={{ ...card }}>
+              <div style={{ fontSize: 10, color: KK.accent, letterSpacing: "0.1em", marginBottom: 8, fontFamily: "'DM Mono', monospace" }}>ACTION ITEMS</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {KK_ACTIONS.map((a) => (
+                  <div
+                    key={a.title}
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      gap: 8,
+                      padding: "8px 10px",
+                      background: `${KK.bg}`,
+                      borderRadius: 8,
+                      border: `1px solid ${KK.border}`,
+                    }}
+                  >
+                    <span style={{ fontSize: 12, color: KK.text }}>{a.title}</span>
+                    <span style={{ fontSize: 10, color: KK.dim, fontFamily: "'DM Mono', monospace" }}>{a.time}</span>
+                    <span style={{ fontSize: 10, fontWeight: 600, color: kkPriColor(a.pri), fontFamily: "'DM Mono', monospace" }}>{a.pri}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {tab === "contacts" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            <div style={{ ...card }}>
+              <div style={{ fontSize: 10, color: KK.primary, marginBottom: 8, fontFamily: "'DM Mono', monospace" }}>SEARCH CONTACT ({KK_TOOL_CONTACT_SEARCH})</div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <input
+                  value={contactQuery}
+                  onChange={(e) => setContactQuery(e.target.value)}
+                  placeholder="Search contacts"
+                  style={{
+                    flex: 1,
+                    minWidth: 160,
+                    padding: "8px 10px",
+                    borderRadius: 8,
+                    border: `1px solid ${KK.border}`,
+                    background: KK.bg,
+                    color: KK.text,
+                    fontSize: 13,
+                  }}
+                />
+                <button
+                  type="button"
+                  disabled={searchBusy || !contactQuery.trim()}
+                  onClick={runSearch}
+                  style={{
+                    padding: "8px 14px",
+                    borderRadius: 8,
+                    border: `1px solid ${KK.primary}`,
+                    background: `${KK.primary}22`,
+                    color: KK.primary,
+                    cursor: searchBusy ? "wait" : "pointer",
+                    fontSize: 12,
+                    fontFamily: "'DM Mono', monospace",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 8,
+                    minWidth: 88,
+                    justifyContent: "center",
+                  }}
+                >
+                  {searchBusy && <span style={{ ...kkSpinnerStyle, width: 14, height: 14 }} aria-hidden />}
+                  {searchBusy ? "Searching…" : "Search"}
+                </button>
+              </div>
+              {searchBusy && searchContacts == null && !searchError && (
+                <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 10, fontSize: 12, color: KK.dim }}>
+                  <span style={{ ...kkSpinnerStyle, width: 16, height: 16 }} aria-hidden />
+                  Loading results…
+                </div>
+              )}
+              {searchError && (
+                <div style={{ marginTop: 10, fontSize: 12, color: KK.danger }}>{searchError}</div>
+              )}
+              {searchContacts != null && (
+                <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 10, maxHeight: 280, overflowY: "auto" }}>
+                  {searchContacts.length === 0 && !searchBusy && <div style={{ fontSize: 12, color: KK.dim }}>No contacts found.</div>}
+                  {searchContacts.map((c, i) => (
+                    <div
+                      key={i}
+                      style={{
+                        padding: 10,
+                        borderRadius: 8,
+                        border: `1px solid ${KK.border}`,
+                        background: KK.bg,
+                        fontSize: 11,
+                        color: KK.text,
+                        lineHeight: 1.45,
+                      }}
+                    >
+                      <div style={{ fontWeight: 600, color: KK.primary, marginBottom: 6 }}>
+                        {[c.firstNameRaw, c.lastNameRaw].filter(Boolean).join(" ") || "—"}
+                      </div>
+                      {c.phone && (
+                        <div>
+                          <span style={{ color: KK.dim }}>phone</span> {String(c.phone)}
+                        </div>
+                      )}
+                      {c.email && (
+                        <div>
+                          <span style={{ color: KK.dim }}>email</span> {String(c.email)}
+                        </div>
+                      )}
+                      {Array.isArray(c.tags) && c.tags.length > 0 && (
+                        <div>
+                          <span style={{ color: KK.dim }}>tags</span> {c.tags.join(", ")}
+                        </div>
+                      )}
+                      {(c.address1 || c.city || c.state) && (
+                        <div>
+                          <span style={{ color: KK.dim }}>address</span> {[c.address1, c.city, c.state].filter(Boolean).join(", ")}
+                        </div>
+                      )}
+                      {c.source && (
+                        <div>
+                          <span style={{ color: KK.dim }}>source</span> {String(c.source)}
+                        </div>
+                      )}
+                      {c.assignedTo && (
+                        <div>
+                          <span style={{ color: KK.dim }}>assigned</span> {String(c.assignedTo)}
+                        </div>
+                      )}
+                      {c.dateAdded && (
+                        <div>
+                          <span style={{ color: KK.dim }}>added</span> {String(c.dateAdded)}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div style={{ ...card }}>
+              <div style={{ fontSize: 10, color: KK.primary, marginBottom: 8, fontFamily: "'DM Mono', monospace" }}>PUSH CONTACT (4805253)</div>
+              <div style={{ fontSize: 10, color: KK.dim, marginBottom: 10, lineHeight: 1.5 }}>
+                Auto-tags: pre-foreclosure, batchleads-source, tri-cities-tn, vera-voicemail-pending
+              </div>
+              {["first_name", "last_name", "phone_1", "email", "property_address", "property_city", "property_zip"].map((field) => (
+                <div key={field} style={{ marginBottom: 8 }}>
+                  <div style={{ fontSize: 9, color: KK.dim, marginBottom: 4, fontFamily: "'DM Mono', monospace" }}>{field.replace(/_/g, " ")}</div>
+                  <input
+                    value={pushForm[field]}
+                    onChange={(e) => setPushForm((p) => ({ ...p, [field]: e.target.value }))}
+                    placeholder={field === "email" ? "optional" : ""}
+                    style={{
+                      width: "100%",
+                      padding: "8px 10px",
+                      borderRadius: 8,
+                      border: `1px solid ${KK.border}`,
+                      background: KK.bg,
+                      color: KK.text,
+                      fontSize: 13,
+                      boxSizing: "border-box",
+                    }}
+                  />
+                </div>
+              ))}
+              <button
+                type="button"
+                disabled={pushBusy}
+                onClick={runPush}
+                style={{
+                  marginTop: 8,
+                  padding: "10px 14px",
+                  borderRadius: 8,
+                  border: `1px solid ${KK.success}`,
+                  background: `${KK.success}18`,
+                  color: KK.success,
+                  cursor: pushBusy ? "wait" : "pointer",
+                  fontSize: 12,
+                  fontFamily: "'DM Mono', monospace",
+                  width: "100%",
+                }}
+              >
+                {pushBusy ? "Pushing…" : "Push to GHL"}
+              </button>
+              {pushNote?.err && <div style={{ marginTop: 8, fontSize: 12, color: KK.danger }}>{pushNote.err}</div>}
+              {pushNote?.ok && (
+                <pre
+                  style={{
+                    marginTop: 8,
+                    fontSize: 11,
+                    color: KK.dim,
+                    background: KK.bg,
+                    padding: 10,
+                    borderRadius: 8,
+                    overflow: "auto",
+                    border: `1px solid ${KK.border}`,
+                  }}
+                >
+                  {JSON.stringify(pushNote.res, null, 2)}
+                </pre>
+              )}
+            </div>
+          </div>
+        )}
+
+        {tab === "pipelines" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {KK_PIPELINES.map((p, i) => (
+              <div
+                key={i}
+                style={{
+                  ...card,
+                  borderColor: p.primary ? KK.accent : KK.border,
+                  borderLeftWidth: p.primary ? 3 : 1,
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, flexWrap: "wrap" }}>
+                  <div>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: KK.text }}>
+                      {i + 1}. {p.name}
+                    </span>
+                    {p.id && (
+                      <span style={{ fontSize: 10, color: KK.dim, fontFamily: "'DM Mono', monospace", marginLeft: 6 }}>
+                        ({p.id})
+                      </span>
+                    )}
+                    {p.primary && (
+                      <span
+                        style={{
+                          marginLeft: 8,
+                          fontSize: 9,
+                          padding: "2px 6px",
+                          borderRadius: 4,
+                          background: `${KK.accent}33`,
+                          color: KK.accent,
+                          fontFamily: "'DM Mono', monospace",
+                        }}
+                      >
+                        PRIMARY
+                      </span>
+                    )}
+                  </div>
+                  <span style={{ fontSize: 11, color: KK.primary, fontFamily: "'DM Mono', monospace" }}>{p.stages} stages</span>
+                </div>
+                {p.stageNames && (
+                  <div style={{ fontSize: 11, color: KK.dim, marginTop: 8, lineHeight: 1.5 }}>Stages: {p.stageNames.join(" → ")}</div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {tab === "scenarios" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ ...card }}>
+              <div style={{ fontSize: 10, color: KK.accent, marginBottom: 10, fontFamily: "'DM Mono', monospace" }}>SCENARIOS</div>
+              {KK_SCENARIOS.map((s) => (
+                <div
+                  key={s.id}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    padding: "8px 0",
+                    borderBottom: `1px solid ${KK.border}`,
+                    fontSize: 12,
+                  }}
+                >
+                  <span
+                    style={{
+                      width: 8,
+                      height: 8,
+                      borderRadius: "50%",
+                      background: s.status === "error" ? KK.danger : KK.success,
+                      flexShrink: 0,
+                    }}
+                  />
+                  <span style={{ flex: 1, color: KK.text }}>
+                    {s.name} <span style={{ color: KK.dim }}>({s.id})</span>
+                  </span>
+                  <span style={{ fontSize: 10, color: s.status === "error" ? KK.danger : KK.success, fontFamily: "'DM Mono', monospace" }}>
+                    {s.status}
+                  </span>
+                  <span style={{ fontSize: 10, color: KK.dim, fontFamily: "'DM Mono', monospace" }}>{s.detail}</span>
+                </div>
+              ))}
+            </div>
+            <div style={{ ...card }}>
+              <div style={{ fontSize: 10, color: KK.accent, marginBottom: 10, fontFamily: "'DM Mono', monospace" }}>MAKE TOOLS</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 8 }}>
+                {KK_MAKE_TOOLS.map((t) => (
+                  <div
+                    key={t.id}
+                    style={{
+                      padding: "8px 10px",
+                      borderRadius: 8,
+                      border: `1px solid ${KK.border}`,
+                      background: KK.bg,
+                      fontSize: 11,
+                      color: KK.text,
+                    }}
+                  >
+                    <div style={{ fontFamily: "'DM Mono', monospace", color: KK.primary }}>{t.id}</div>
+                    <div style={{ color: KK.dim, marginTop: 4 }}>{t.label}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {tab === "agents" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div
+              style={{
+                ...card,
+                fontSize: 12,
+                color: KK.warning,
+                borderColor: KK.warning,
+                background: `${KK.warning}10`,
+              }}
+            >
+              Call routing order: <strong style={{ color: KK.text }}>Tasha → Cory → Nate → Vera AI</strong> (last resort only)
+            </div>
+            {KK_AGENTS.map((a) => (
+              <div key={a.ghl} style={{ ...card }}>
+                <div style={{ fontSize: 14, fontWeight: 600, color: KK.text }}>{a.name}</div>
+                <div style={{ fontSize: 12, color: KK.dim, marginTop: 6 }}>{a.phone}</div>
+                <div style={{ fontSize: 12, color: KK.primary, marginTop: 4 }}>{a.email}</div>
+                <div style={{ fontSize: 11, color: KK.dim, marginTop: 6, fontFamily: "'DM Mono', monospace" }}>
+                  GHL: {a.ghl}
+                </div>
+                <div style={{ fontSize: 10, color: KK.accent, marginTop: 8, fontFamily: "'DM Mono', monospace" }}>{a.role}</div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {tab === "webhooks" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {KK_WEBHOOKS.map((w) => (
+              <div key={w.url} style={{ ...card }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: KK.text, marginBottom: 6 }}>{w.label}</div>
+                <div
+                  style={{
+                    fontSize: 10,
+                    color: KK.dim,
+                    wordBreak: "break-all",
+                    fontFamily: "'DM Mono', monospace",
+                    lineHeight: 1.5,
+                  }}
+                >
+                  {w.url}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {tab === "credentials" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div
+              style={{
+                ...card,
+                borderColor: KK.danger,
+                background: `${KK.danger}10`,
+                color: KK.text,
+                fontSize: 12,
+                lineHeight: 1.6,
+              }}
+            >
+              <div style={{ fontWeight: 600, color: KK.danger, marginBottom: 6 }}>TREC compliance</div>
+              All comms must include: iHome Team | Keller Williams Kingsport, 2 Sheridan Square, Kingsport TN 37660, 423-247-5510. NEVER use: foreclosure,
+              behind on payments, financial trouble, distressed
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", gap: 8 }}>
+              {KK_CREDENTIALS.map((c) => (
+                <div key={c.k} style={{ ...card }}>
+                  <div style={{ fontSize: 9, color: KK.dim, fontFamily: "'DM Mono', monospace", marginBottom: 4 }}>{c.k}</div>
+                  <div style={{ fontSize: 12, color: KK.text, wordBreak: "break-word" }}>{c.v}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const VoiceVisualizer = ({ analyserRef }) => {
+  const canvasRef = useRef(null);
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext("2d");
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    const dataArray = new Uint8Array(128);
+    let frame;
+
+    const animate = () => {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      if (analyserRef.current) {
+        analyserRef.current.getByteFrequencyData(dataArray);
+      } else {
+        dataArray.fill(0);
+      }
+
+      const cx = canvas.width / 2;
+      const cy = canvas.height / 2;
+      const barCount = 64;
+      const barWidth = 3;
+      const gap = 4;
+      const totalWidth = barCount * (barWidth + gap);
+      const startX = cx - totalWidth / 2;
+
+      for (let i = 0; i < barCount; i++) {
+        const value = dataArray[i] / 255;
+        const x = startX + i * (barWidth + gap);
+
+        // Mirror index for symmetric mouth effect
+        const mirrorI = i < barCount / 2 ? i : barCount - 1 - i;
+        const mirrorValue = dataArray[mirrorI] / 255;
+        const mirrorHeight = Math.max(3, mirrorValue * 140);
+
+        // Gold to silver gradient based on amplitude
+        const alpha = 0.4 + value * 0.6;
+
+        // Glow effect
+        ctx.shadowBlur = value * 18;
+        ctx.shadowColor = `rgba(200,168,75,${value})`;
+
+        // Top bar
+        const grad = ctx.createLinearGradient(x, cy - mirrorHeight, x, cy);
+        grad.addColorStop(0, `rgba(245,245,245,${alpha * 0.9})`);
+        grad.addColorStop(0.5, `rgba(200,168,75,${alpha})`);
+        grad.addColorStop(1, `rgba(200,168,75,0.1)`);
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.roundRect(x, cy - mirrorHeight, barWidth, mirrorHeight, 2);
+        ctx.fill();
+
+        // Bottom bar (mirror)
+        const grad2 = ctx.createLinearGradient(x, cy, x, cy + mirrorHeight);
+        grad2.addColorStop(0, `rgba(200,168,75,0.1)`);
+        grad2.addColorStop(0.5, `rgba(200,168,75,${alpha})`);
+        grad2.addColorStop(1, `rgba(245,245,245,${alpha * 0.9})`);
+        ctx.fillStyle = grad2;
+        ctx.beginPath();
+        ctx.roundRect(x, cy, barWidth, mirrorHeight, 2);
+        ctx.fill();
+      }
+
+      ctx.shadowBlur = 0;
+      frame = requestAnimationFrame(animate);
+    };
+
+    frame = requestAnimationFrame(animate);
+    return () => cancelAnimationFrame(frame);
+  }, [analyserRef]);
+
+  return (
+    <canvas ref={canvasRef} style={{
+      position:"fixed", top:0, left:0, width:"100%", height:"100%",
+      zIndex:50, pointerEvents:"none",
+    }}/>
+  );
+};
+
 // ── Main App ──────────────────────────────────────────────────────────────────
 export default function App() {
   const [messages,     setMessages]     = useState([]);
@@ -419,40 +1743,75 @@ export default function App() {
   const [savingMemory, setSavingMemory] = useState(false);
   const [activeTools,  setActiveTools]  = useState([]);
   const [activeTab,    setActiveTab]    = useState("chat"); // "chat" | "ideas"
+  const [activeAgent,  setActiveAgent]  = useState(null);
+  /** When KnockKnock mode is on: "dashboard" shows ops panel above chat; "chat" hides the panel. */
+  const [knockKnockUiMode, setKnockKnockUiMode] = useState("dashboard");
+  const [isListening,  setIsListening]  = useState(false);
+  const [voiceEnabled, setVoiceEnabled] = useState(true);
+  const [isSpeaking,   setIsSpeaking]   = useState(false);
   const bottomRef = useRef(null);
+  const analyserRef = useRef(null);
 
   useEffect(() => {
-    const saved = storage.get("jarvis_memories") || [];
-    setMemories(saved);
-    setMessages([{ role:"assistant", content: saved.length > 0
-      ? `J.A.R.V.I.S. online. ${saved.length} memories loaded. GHL wired to iHome Realty. What are we executing today, Matthew?`
-      : `J.A.R.V.I.S. online. GHL Email Sender live. What's the first move, Matthew?`
-    }]);
+    supabase.from("memories").select("*").order("updated_at", { ascending: false })
+      .then(({ data }) => {
+        const saved = data || [];
+        setMemories(saved);
+        setMessages([{ role:"assistant", content: saved.length > 0
+          ? `J.A.R.V.I.S. online. ${saved.length} memories loaded. GHL wired to iHome Realty. What are we executing today, Matthew?`
+          : `J.A.R.V.I.S. online. GHL Email Sender live. What's the first move, Matthew?`
+        }]);
+      });
   }, []);
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior:"smooth" }); }, [messages, loading]);
 
-  const saveMemories = (mem) => { setMemories(mem); storage.set("jarvis_memories", mem); };
-  const deleteMemory = (key) => saveMemories(memories.filter(m => m.key !== key));
+  const deleteMemory = async (key) => {
+    await supabase.from("memories").delete().eq("key", key);
+    setMemories(prev => prev.filter(m => m.key !== key));
+  };
 
   const buildSystemPrompt = () => {
-    if (!memories.length) return BASE_SYSTEM_PROMPT;
+    if (activeAgent === "knockknock") {
+      const base = KNOCKKNOCK_SYSTEM_PROMPT;
+      if (!memories.length) return base;
+      const block = memories.map((m) => `[${m.category.toUpperCase()}] ${m.key}: ${m.value}`).join("\n");
+      return `${base}\n\n--- MATTHEW'S MEMORY ---\n${block}\n--- END MEMORY ---`;
+    }
+    const agentBlock = activeAgent && AGENT_PROMPTS[activeAgent]
+      ? `\n\n${AGENT_PROMPTS[activeAgent]}`
+      : "";
+    const base = `${BASE_SYSTEM_PROMPT}${agentBlock}`;
+    if (!memories.length) return base;
     const block = memories.map(m=>`[${m.category.toUpperCase()}] ${m.key}: ${m.value}`).join("\n");
-    return `${BASE_SYSTEM_PROMPT}\n\n--- MATTHEW'S MEMORY ---\n${block}\n--- END MEMORY ---`;
+    return `${base}\n\n--- MATTHEW'S MEMORY ---\n${block}\n--- END MEMORY ---`;
   };
 
   const extractFacts = async (msg) => {
     try {
-      const data = await callClaude({ model:"claude-sonnet-4-5", max_tokens:400,
+      const data = await callClaude({ model:MODEL, max_tokens:400,
         messages:[{ role:"user", content:`${EXTRACT_PROMPT}\n\nMessage: "${msg}"` }] });
-      const parsed = JSON.parse(data.content?.map(b=>b.text||"").join("").replace(/```json|```/g,"").trim());
+      const { displayText } = parseClaudeMessageContent(data);
+      const parsed = JSON.parse(displayText.replace(/```json|```/g,"").trim());
       if (parsed.hasNewFacts && parsed.facts?.length > 0) {
-        const updated = [...memories];
-        for (const f of parsed.facts) { const i = updated.findIndex(m=>m.key===f.key); i>=0?updated[i]=f:updated.push(f); }
-        saveMemories(updated);
+        // Upsert each fact to Supabase
+        for (const f of parsed.facts) {
+          await supabase.from("memories").upsert(
+            { key: f.key, value: f.value, category: f.category, updated_at: new Date().toISOString() },
+            { onConflict: "key" }
+          );
+        }
+        setMemories(prev => {
+          const updated = [...prev];
+          for (const f of parsed.facts) {
+            const i = updated.findIndex(m => m.key === f.key);
+            i >= 0 ? updated[i] = { ...updated[i], ...f } : updated.push(f);
+          }
+          return updated;
+        });
         return parsed.facts.length;
       }
-    } catch {}
+    } catch { /* ignore extract failures */ }
     return 0;
   };
 
@@ -460,7 +1819,7 @@ export default function App() {
     setActiveTools([{ name:"send_email", status:"running" }]);
     try {
       const ctx = memories.length ? `\nContext: ${memories.map(m=>`${m.key}: ${m.value}`).join(", ")}` : "";
-      const data = await callClaude({ model:"claude-sonnet-4-5", max_tokens:600,
+      const data = await callClaude({ model:MODEL, max_tokens:600,
         messages:[{ role:"user", content:
           `You are an email composer for Matthew Bright, CEO of ClosingPilot.${ctx}
 CRITICAL — GHL adds the sender signature automatically. Do NOT put any sign-off, closing, or signature in greeting or body. No "Best regards", no "Sincerely", no sender name, no title, no company name.
@@ -468,7 +1827,8 @@ Extract fields and return ONLY valid JSON — no other text:
 {"first_name":"","last_name":"","email":"","subject":"","greeting":"Hi [first_name],","body":"[main message 2-3 sentences]","missing_email":false}
 If no email address provided, set missing_email:true.
 Request: "${userText}"` }] });
-      const raw = data.content?.map(b=>b.text||"").join("").replace(/```json|```/g,"").trim();
+      const { displayText: composeDisplay } = parseClaudeMessageContent(data);
+      const raw = composeDisplay.replace(/```json|```/g,"").trim();
       const parsed = JSON.parse(raw);
       parsed.body = parsed.body.replace(/best regards[\s\S]*/gi, '').trim();
       setActiveTools([{ name:"send_email", status:"done" }]);
@@ -487,7 +1847,7 @@ Request: "${userText}"` }] });
 
     extractFacts(userText).then(n => { if (n>0) { setSavingMemory(true); setTimeout(()=>setSavingMemory(false),2500); }});
 
-    if (isEmailIntent(userText)) {
+    if (activeAgent !== "knockknock" && isEmailIntent(userText)) {
       const emailData = await composeEmail(userText);
       if (emailData?.missing_email) {
         setMessages(prev=>[...prev,{ role:"assistant", content:"What's the recipient's email address? I have everything else ready." }]);
@@ -500,35 +1860,539 @@ Request: "${userText}"` }] });
     }
 
     try {
+      const toolsForRequest = activeAgent === "knockknock" ? KNOCKKNOCK_TOOLS : TOOLS;
       const apiMessages = newMessages.map(m=>({ role:m.role, content:m.content }));
-      const data = await callClaude({ model:"claude-sonnet-4-5", max_tokens:1000,
-        system: buildSystemPrompt(), tools:TOOLS, tool_choice:{type:"auto"}, messages:apiMessages });
-
-      if (data.error) { setMessages(prev=>[...prev,{role:"assistant",content:`Error: ${data.error.message}`}]); setLoading(false); return; }
-
-      const toolBlocks = data.content?.filter(b=>b.type==="tool_use")||[];
-      const textReply  = data.content?.filter(b=>b.type==="text").map(b=>b.text).join("")||"";
-
-      if (!toolBlocks.length) {
-        setMessages(prev=>[...prev,{role:"assistant",content:textReply||"No response."}]);
-      } else {
-        const emailDrafts=[]; const ghlActions=[];
-        const toolResults = await Promise.all(toolBlocks.map(async block => {
-          if (block.name==="send_email")  emailDrafts.push(block.input);
-          if (block.name==="trigger_ghl") ghlActions.push(block.input);
-          return { type:"tool_result", tool_use_id:block.id, content:JSON.stringify({success:true}) };
-        }));
-        const data2 = await callClaude({ model:"claude-sonnet-4-5", max_tokens:1000,
-          system:buildSystemPrompt(), tools:TOOLS, tool_choice:{type:"auto"},
-          messages:[...apiMessages,{role:"assistant",content:data.content},{role:"user",content:toolResults}] });
-        const final = data2.content?.filter(b=>b.type==="text").map(b=>b.text).join("")||"Done.";
-        setMessages(prev=>[...prev,{role:"assistant",content:final,emailDrafts,ghlActions}]);
+      // Force tool use if message contains commit intent
+      const forceGithubToolUse = activeAgent !== "knockknock" && /commit|write|fix|update|change|deploy/i.test(userText);
+      const forceOpsToolUse = activeAgent === "OPS" && isOpsSupabaseIntent(userText);
+      const forceToolUse = forceGithubToolUse || forceOpsToolUse;
+      setMessages(prev => [...prev, { role:"assistant", content:"" }]);
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: anthropicHeadersWithMcp,
+        body: JSON.stringify(
+          anthropicBodyWithGhlMcp({
+            model: MODEL,
+            max_tokens: 1000,
+            stream: true,
+            system: buildSystemPrompt(),
+            tools: toolsForRequest,
+            tool_choice: forceToolUse ? { type: "any" } : { type: "auto" },
+            messages: apiMessages,
+          }),
+        ),
+      });
+      if (!res.ok) throw new Error(`API ${res.status}`);
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      let blocks = {};
+      let stopReason = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream:true });
+        const lines = buf.split("\n");
+        buf = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          try {
+            const ev = JSON.parse(line.slice(6).trim());
+            if (ev.type === "content_block_start") {
+              const cb = ev.content_block;
+              console.log("BLOCK START:", cb.type, cb.name || "");
+              if (cb.type === "tool_use") {
+                blocks[ev.index] = { type: "tool_use", id: cb.id, name: cb.name, inputStr: "" };
+                setActiveTools((prev) => [...prev, { name: cb.name, status: "running" }]);
+              } else if (cb.type === "mcp_tool_use") {
+                const seed =
+                  cb.input != null ? (typeof cb.input === "string" ? cb.input : JSON.stringify(cb.input)) : "";
+                blocks[ev.index] = {
+                  type: "mcp_tool_use",
+                  id: cb.id,
+                  name: cb.name,
+                  server_name: cb.server_name || "ghl-mcp",
+                  inputStr: seed || "",
+                };
+                setActiveTools((prev) => [...prev, { name: `ghl:${cb.name}`, status: "running" }]);
+              } else if (cb.type === "mcp_tool_result") {
+                let summary = "";
+                try {
+                  summary = JSON.stringify(JSON.parse(cb.content?.[0]?.text || "{}"), null, 2);
+                } catch {
+                  summary = cb.content?.[0]?.text || "";
+                }
+                blocks[ev.index] = {
+                  type: "mcp_tool_result",
+                  tool_use_id: cb.tool_use_id,
+                  is_error: cb.is_error,
+                  content: cb.content,
+                  summary,
+                };
+              } else {
+                blocks[ev.index] = { type: "text", text: "" };
+              }
+            }
+            if (ev.type === "content_block_delta") {
+              const b = blocks[ev.index];
+              if (!b) continue;
+              if (ev.delta.type === "text_delta") {
+                if (b.type !== "text") continue;
+                b.text += ev.delta.text;
+                const snap = b.text;
+                setMessages((prev) => {
+                  const u = [...prev];
+                  u[u.length - 1] = { role: "assistant", content: snap };
+                  return u;
+                });
+              }
+              if (ev.delta.type === "input_json_delta" && (b.type === "tool_use" || b.type === "mcp_tool_use")) {
+                b.inputStr += ev.delta.partial_json;
+              }
+            }
+            if (ev.type === "message_delta") stopReason = ev.delta.stop_reason;
+          } catch { /* ignore stream line */ }
+        }
       }
-    } catch(e) { setMessages(prev=>[...prev,{role:"assistant",content:`Error: ${e.message}`}]); }
+      console.log("STOP REASON:", stopReason, "BLOCKS:", JSON.stringify(Object.values(blocks).map(b => ({ type: b?.type, name: b?.name }))));
+      {
+        const mergedStreamText = streamTextFromBlocks(blocks).trim();
+        const mcpTail = streamMcpResultTail(blocks);
+        if (mcpTail && !mergedStreamText) {
+          setMessages((prev) => {
+            const u = [...prev];
+            if (u[u.length - 1]?.role === "assistant") {
+              u[u.length - 1] = { ...u[u.length - 1], content: mcpTail };
+            }
+            return u;
+          });
+        }
+      }
+      if (stopReason === "tool_use") {
+        const toolBlocks = Object.values(blocks).filter(b => b?.type === "tool_use");
+        if (toolBlocks.length > 0) {
+        const emailDrafts = []; const ghlActions = [];
+        const parsedTools = toolBlocks.map(b => {
+          let input = {};
+          try { input = JSON.parse(b.inputStr || "{}"); } catch { input = {}; }
+          return { ...b, input };
+        });
+        const toolResults = await Promise.all(parsedTools.map(async (b) => {
+          const { input } = b;
+
+          if (b.name === "send_email") emailDrafts.push(input);
+          if (b.name === "trigger_ghl") ghlActions.push(input);
+
+          if (b.name === "query_github") {
+            const { action, owner, repo, path, count } = input;
+            const toolMap = { get_file: "github_get_file", list_files: "github_list_files", recent_commits: "github_recent_commits" };
+            const toolResult = await callTool(toolMap[action], { owner, repo, path, count });
+            if (action === "get_file" && toolResult?.content) {
+              window.__lastFileRead = { path, content: toolResult.content, sha: toolResult.sha };
+            }
+            return { type: "tool_result", tool_use_id: b.id, content: JSON.stringify(toolResult) };
+          }
+
+          if (b.name === "query_supabase") {
+            const toolResult = await callTool("supabase_query", input);
+            return { type: "tool_result", tool_use_id: b.id, content: JSON.stringify(toolResult) };
+          }
+
+          if (b.name === "write_github_file") {
+            const toolResult = await callTool("github_write_file", input);
+            return { type: "tool_result", tool_use_id: b.id, content: JSON.stringify(toolResult) };
+          }
+
+          if (b.name === "find_replace_github_file") {
+            const toolResult = await callTool("github_find_replace", input);
+            return { type: "tool_result", tool_use_id: b.id, content: JSON.stringify(toolResult) };
+          }
+
+          if (b.name === "trigger_make_tool") {
+            const toolResult = await callMakeTrigger(input);
+            return { type: "tool_result", tool_use_id: b.id, content: JSON.stringify(toolResult) };
+          }
+
+          return { type: "tool_result", tool_use_id: b.id, content: JSON.stringify({ success: true }) };
+        }));
+        const assistantContent = buildAssistantContentFromBlocks(blocks, parsedTools);
+        setMessages(prev => { const u=[...prev]; u[u.length-1]={ role:"assistant", content:"" }; return u; });
+        const res2 = await fetch("https://api.anthropic.com/v1/messages", {
+          method: "POST",
+          headers: anthropicHeadersWithMcp,
+          body: JSON.stringify(
+            anthropicBodyWithGhlMcp({
+              model: MODEL,
+              max_tokens: 1000,
+              stream: true,
+              system: buildSystemPrompt(),
+              tools: toolsForRequest,
+              tool_choice:
+                forceGithubToolUse && toolBlocks.some((b) => b.name === "query_github")
+                  ? { type: "tool", name: "find_replace_github_file" }
+                  : forceGithubToolUse
+                    ? { type: "any" }
+                    : { type: "auto" },
+              messages: [...apiMessages, { role: "assistant", content: assistantContent }, { role: "user", content: toolResults }],
+            }),
+          ),
+        });
+        if (!res2.ok) {
+          const errText = await res2.text();
+          setMessages(prev => { const u=[...prev]; u[u.length-1]={ role:"assistant", content:`Tool error: ${res2.status} — ${errText}` }; return u; });
+          setActiveTools([]); setLoading(false); return;
+        }
+        const reader2 = res2.body.getReader();
+        let buf2 = "";
+        let blocks2 = {};
+        let stopReason2 = "";
+        while (true) {
+          const { done, value } = await reader2.read();
+          if (done) break;
+          buf2 += dec.decode(value, { stream:true });
+          const lines = buf2.split("\n");
+          buf2 = lines.pop() ?? "";
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            try {
+              const ev = JSON.parse(line.slice(6).trim());
+              if (ev.type === "content_block_start") {
+                const cb = ev.content_block;
+                if (cb.type === "tool_use") {
+                  blocks2[ev.index] = { type: "tool_use", id: cb.id, name: cb.name, inputStr: "" };
+                  setActiveTools((prev) => [...prev, { name: cb.name, status: "running" }]);
+                } else if (cb.type === "mcp_tool_use") {
+                  const seed =
+                    cb.input != null ? (typeof cb.input === "string" ? cb.input : JSON.stringify(cb.input)) : "";
+                  blocks2[ev.index] = {
+                    type: "mcp_tool_use",
+                    id: cb.id,
+                    name: cb.name,
+                    server_name: cb.server_name || "ghl-mcp",
+                    inputStr: seed || "",
+                  };
+                  setActiveTools((prev) => [...prev, { name: `ghl:${cb.name}`, status: "running" }]);
+                } else if (cb.type === "mcp_tool_result") {
+                  let summary = "";
+                  try {
+                    summary = JSON.stringify(JSON.parse(cb.content?.[0]?.text || "{}"), null, 2);
+                  } catch {
+                    summary = cb.content?.[0]?.text || "";
+                  }
+                  blocks2[ev.index] = {
+                    type: "mcp_tool_result",
+                    tool_use_id: cb.tool_use_id,
+                    is_error: cb.is_error,
+                    content: cb.content,
+                    summary,
+                  };
+                } else {
+                  blocks2[ev.index] = { type: "text", text: "" };
+                }
+              }
+              if (ev.type === "content_block_delta") {
+                const b = blocks2[ev.index];
+                if (!b) continue;
+                if (ev.delta.type === "text_delta") {
+                  if (b.type !== "text") continue;
+                  b.text += ev.delta.text;
+                  const snap = b.text;
+                  setMessages((prev) => {
+                    const u = [...prev];
+                    u[u.length - 1] = { role: "assistant", content: snap, emailDrafts, ghlActions };
+                    return u;
+                  });
+                }
+                if (ev.delta.type === "input_json_delta" && (b.type === "tool_use" || b.type === "mcp_tool_use")) {
+                  b.inputStr += ev.delta.partial_json;
+                }
+              }
+              if (ev.type === "message_delta") stopReason2 = ev.delta.stop_reason;
+            } catch { /* ignore stream line */ }
+          }
+        }
+        const r2Text = Object.values(blocks2).filter(b => b?.type === "text").map(b => b.text || "").join("");
+        console.log("R2 DONE. stopReason2:", stopReason2, "text length:", r2Text.length);
+        {
+          const mergedR2 = streamTextFromBlocks(blocks2).trim();
+          const mcpR2 = streamMcpResultTail(blocks2);
+          if (mcpR2 && !mergedR2) {
+            setMessages((prev) => {
+              const u = [...prev];
+              if (u[u.length - 1]?.role === "assistant") {
+                u[u.length - 1] = { ...u[u.length - 1], content: mcpR2, emailDrafts, ghlActions };
+              }
+              return u;
+            });
+          }
+        }
+
+        if (stopReason2 === "tool_use") {
+          const toolBlocks2 = Object.values(blocks2).filter(b => b?.type === "tool_use");
+          if (toolBlocks2.length > 0) {
+          const parsedTools2 = toolBlocks2.map(b => {
+            let input = {};
+            try { input = JSON.parse(b.inputStr || "{}"); } catch { input = {}; }
+            return { ...b, input };
+          });
+          const toolResults2 = await Promise.all(parsedTools2.map(async (b) => {
+            const { input } = b;
+
+            if (b.name === "send_email") emailDrafts.push(input);
+            if (b.name === "trigger_ghl") ghlActions.push(input);
+
+            if (b.name === "query_github") {
+              const { action, owner, repo, path, count } = input;
+              const toolMap = { get_file: "github_get_file", list_files: "github_list_files", recent_commits: "github_recent_commits" };
+              const toolResult = await callTool(toolMap[action], { owner, repo, path, count });
+              return { type: "tool_result", tool_use_id: b.id, content: JSON.stringify(toolResult) };
+            }
+
+            if (b.name === "query_supabase") {
+              const toolResult = await callTool("supabase_query", input);
+              return { type: "tool_result", tool_use_id: b.id, content: JSON.stringify(toolResult) };
+            }
+
+            if (b.name === "write_github_file") {
+              if (window.__lastFileRead) {
+                if (!input.path || !input.path.includes(".")) input.path = window.__lastFileRead.path;
+                if (!input.content) input.content = window.__lastFileRead.content;
+                if (!input.sha) input.sha = window.__lastFileRead.sha;
+              }
+              console.log("WRITE INPUT:", JSON.stringify({ ...input, content: input.content?.slice(0, 100) }));
+              const toolResult = await callTool("github_write_file", input);
+              console.log("WRITE RESULT:", JSON.stringify(toolResult));
+              return { type: "tool_result", tool_use_id: b.id, content: JSON.stringify(toolResult) };
+            }
+
+            if (b.name === "find_replace_github_file") {
+              const toolResult = await callTool("github_find_replace", input);
+              return { type: "tool_result", tool_use_id: b.id, content: JSON.stringify(toolResult) };
+            }
+
+            if (b.name === "trigger_make_tool") {
+              const toolResult = await callMakeTrigger(input);
+              return { type: "tool_result", tool_use_id: b.id, content: JSON.stringify(toolResult) };
+            }
+
+            return { type: "tool_result", tool_use_id: b.id, content: JSON.stringify({ success: true }) };
+          }));
+          const assistantContent2 = buildAssistantContentFromBlocks(blocks2, parsedTools2);
+          setMessages(prev => { const u=[...prev]; u[u.length-1]={ role:"assistant", content:"" }; return u; });
+          const res3 = await fetch("https://api.anthropic.com/v1/messages", {
+            method: "POST",
+            headers: anthropicHeadersWithMcp,
+            body: JSON.stringify(
+              anthropicBodyWithGhlMcp({
+                model: MODEL,
+                max_tokens: 1000,
+                stream: true,
+                system: buildSystemPrompt(),
+                tools: toolsForRequest,
+                tool_choice: { type: "auto" },
+                messages: [
+                  ...apiMessages,
+                  { role: "assistant", content: assistantContent },
+                  { role: "user", content: toolResults },
+                  { role: "assistant", content: assistantContent2 },
+                  { role: "user", content: toolResults2 },
+                ],
+              }),
+            ),
+          });
+          if (!res3.ok) {
+            const errText = await res3.text();
+            setMessages(prev => { const u=[...prev]; u[u.length-1]={ role:"assistant", content:`Round 3 error: ${res3.status} — ${errText}` }; return u; });
+            setActiveTools([]); setLoading(false); return;
+          }
+          const reader3 = res3.body.getReader();
+          let buf3 = "";
+          let finalText3 = "";
+          const blocks3 = {};
+          while (true) {
+            const { done, value } = await reader3.read();
+            if (done) break;
+            buf3 += dec.decode(value, { stream: true });
+            const lines = buf3.split("\n");
+            buf3 = lines.pop() ?? "";
+            for (const line of lines) {
+              if (!line.startsWith("data: ")) continue;
+              try {
+                const ev = JSON.parse(line.slice(6).trim());
+                if (ev.type === "content_block_start") {
+                  const cb = ev.content_block;
+                  if (cb.type === "mcp_tool_use") {
+                    const seed =
+                      cb.input != null ? (typeof cb.input === "string" ? cb.input : JSON.stringify(cb.input)) : "";
+                    blocks3[ev.index] = {
+                      type: "mcp_tool_use",
+                      id: cb.id,
+                      name: cb.name,
+                      server_name: cb.server_name || "ghl-mcp",
+                      inputStr: seed || "",
+                    };
+                    setActiveTools((prev) => [...prev, { name: `ghl:${cb.name}`, status: "running" }]);
+                  } else if (cb.type === "mcp_tool_result") {
+                    let summary = "";
+                    try {
+                      summary = JSON.stringify(JSON.parse(cb.content?.[0]?.text || "{}"), null, 2);
+                    } catch {
+                      summary = cb.content?.[0]?.text || "";
+                    }
+                    blocks3[ev.index] = {
+                      type: "mcp_tool_result",
+                      tool_use_id: cb.tool_use_id,
+                      is_error: cb.is_error,
+                      content: cb.content,
+                      summary,
+                    };
+                  } else if (cb.type === "tool_use") {
+                    blocks3[ev.index] = { type: "tool_use", id: cb.id, name: cb.name, inputStr: "" };
+                    setActiveTools((prev) => [...prev, { name: cb.name, status: "running" }]);
+                  } else {
+                    blocks3[ev.index] = { type: "text", text: "" };
+                  }
+                }
+                if (ev.type === "content_block_delta") {
+                  const b3 = blocks3[ev.index];
+                  if (!b3) continue;
+                  if (ev.delta?.type === "text_delta") {
+                    if (b3.type !== "text") continue;
+                    b3.text += ev.delta.text;
+                    finalText3 = streamTextFromBlocks(blocks3);
+                    setMessages((prev) => {
+                      const u = [...prev];
+                      u[u.length - 1] = { role: "assistant", content: finalText3, emailDrafts, ghlActions };
+                      return u;
+                    });
+                  }
+                  if (ev.delta?.type === "input_json_delta" && (b3.type === "tool_use" || b3.type === "mcp_tool_use")) {
+                    b3.inputStr += ev.delta.partial_json;
+                  }
+                }
+              } catch {
+                /* ignore stream line */
+              }
+            }
+          }
+          {
+            const mergedR3 = streamTextFromBlocks(blocks3).trim();
+            const mcpR3 = streamMcpResultTail(blocks3);
+            if (mcpR3 && !mergedR3) {
+              setMessages((prev) => {
+                const u = [...prev];
+                if (u[u.length - 1]?.role === "assistant") {
+                  u[u.length - 1] = { ...u[u.length - 1], content: mcpR3, emailDrafts, ghlActions };
+                }
+                return u;
+              });
+            }
+          }
+          console.log("R3 DONE. Final text length:", finalText3.length);
+          }
+        }
+        }
+      }
+    } catch(e) {
+      setMessages(prev => { const u=[...prev]; u[u.length-1]={ role:"assistant", content:`Error: ${e.message}` }; return u; });
+    }
+    // Speak the final assistant response
+    setMessages(prev => {
+      const last = prev[prev.length - 1];
+      if (last?.role === "assistant" && last?.content) {
+        speakText(last.content.slice(0, 500));
+      }
+      return prev;
+    });
     setActiveTools([]); setLoading(false);
   };
 
   const handleKey = (e) => { if (e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); sendMessage(); }};
+
+  const speakText = async (text) => {
+    if (!voiceEnabled) return;
+    const key = import.meta.env.VITE_ELEVEN_KEY;
+    if (!key || !text) return;
+    const DANIEL = "onwK4e9ZLuTAKqWW03F9";
+
+    const stripMarkdown = (t) => t
+      .replace(/\|[\s\S]*?\|/g, "")
+      .replace(/\*\*?(.*?)\*\*?/g, "$1")
+      .replace(/#{1,6}\s/g, "")
+      .replace(/`{1,3}[^`]*`{1,3}/g, "")
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+      .replace(/[-*]\s/g, "")
+      .replace(/\n{2,}/g, ". ")
+      .replace(/\n/g, " ")
+      .replace(/J\.A\.R\.V\.I\.S\./g, 'Jarvis')
+      .trim();
+
+    const cleanText = stripMarkdown(text);
+    if (!cleanText) return;
+
+    const sentences = cleanText.match(/[^.!?]+[.!?]+/g) || [cleanText];
+
+    setIsSpeaking(true);
+    try {
+      for (const sentence of sentences) {
+        const trimmed = sentence.trim();
+        if (!trimmed) continue;
+        const res = await fetch("https://api.elevenlabs.io/v1/text-to-speech/" + DANIEL, {
+          method: "POST",
+          headers: { "xi-api-key": key, "Content-Type": "application/json", "Accept": "audio/mpeg" },
+          body: JSON.stringify({
+            text: trimmed,
+            model_id: "eleven_turbo_v2",
+            voice_settings: { stability: 0.65, similarity_boost: 0.85, speed: 1.15 },
+          }),
+        });
+        if (!res.ok) continue;
+        const buffer = await res.arrayBuffer();
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 256;
+        analyserRef.current = analyser;
+        const decoded = await ctx.decodeAudioData(buffer);
+        const source = ctx.createBufferSource();
+        source.buffer = decoded;
+        source.connect(analyser);
+        analyser.connect(ctx.destination);
+        await new Promise((resolve) => {
+          source.onended = () => {
+            analyserRef.current = null;
+            ctx.close();
+            resolve();
+          };
+          source.start(0);
+        });
+        await new Promise((r) => setTimeout(r, 180));
+      }
+    } catch { /* TTS or playback errors */ }
+    setIsSpeaking(false);
+  };
+
+  // ── Voice input — Web Speech API ──────────────────────────────────────────
+  // No API key needed. Browser handles transcription locally.
+  // onresult fires when speech is detected → sets input → user can edit or send.
+  // onend always fires (even on error) → resets listening state.
+  const startListening = () => {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) { alert("Voice input not supported in this browser. Use Chrome."); return; }
+    if (isListening) return;
+    const recognition = new SR();
+    recognition.lang = "en-US";
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+    recognition.onstart  = () => setIsListening(true);
+    recognition.onend    = () => setIsListening(false);
+    recognition.onerror  = () => setIsListening(false);
+    recognition.onresult = (e) => {
+      const transcript = e.results[0][0].transcript;
+      setInput(transcript);
+      setTimeout(() => sendMessage(transcript), 300);
+    };
+    recognition.start();
+  };
 
   const fmt = (text) => text.split("\n").map((line,i)=>{
     if (line.startsWith("**")&&line.endsWith("**")) return <p key={i} style={{margin:"8px 0 4px",fontWeight:600,color:"#C8A84B",fontSize:12,letterSpacing:"0.04em",textTransform:"uppercase"}}>{line.replace(/\*\*/g,"")}</p>;
@@ -541,13 +2405,17 @@ Request: "${userText}"` }] });
   const ideaCount = (storage.get("jarvis_ideas") || []).length;
 
   return (
-    <div style={{display:"flex",flexDirection:"column",height:"100vh",background:"#0D0D0F",color:"#E8E3D9",fontFamily:"'DM Sans','Segoe UI',sans-serif",position:"relative",overflow:"hidden"}}>
+    <div style={{display:"flex",flexDirection:"column",height:"100svh",paddingTop:"env(safe-area-inset-top)",background:"#0D0D0F",color:"#E8E3D9",fontFamily:"'DM Sans','Segoe UI',sans-serif",position:"relative",overflow:"hidden"}}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap');
         @keyframes pulse{0%,100%{opacity:.3;transform:scale(.8)}50%{opacity:1;transform:scale(1)}}
         @keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
         @keyframes slideIn{from{opacity:0;transform:translateX(20px)}to{opacity:1;transform:translateX(0)}}
         @keyframes memSave{0%{opacity:0}20%{opacity:1}80%{opacity:1}100%{opacity:0}}
+        @keyframes micPulse{0%{box-shadow:0 0 0 0 rgba(200,168,75,0.6)}70%{box-shadow:0 0 0 10px rgba(200,168,75,0)}100%{box-shadow:0 0 0 0 rgba(200,168,75,0)}}
+        @keyframes speakPulse{0%,100%{opacity:0.4;transform:scaleY(0.6)}50%{opacity:1;transform:scaleY(1)}}
+        @keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
+        @keyframes kkSpin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
         ::-webkit-scrollbar{width:3px}::-webkit-scrollbar-thumb{background:#2a2a2e;border-radius:4px}
         textarea{resize:none;font-family:inherit}textarea:focus{outline:none}
         .qbtn:hover{background:rgba(200,168,75,0.12)!important;border-color:rgba(200,168,75,0.4)!important;color:#C8A84B!important}
@@ -602,18 +2470,91 @@ Request: "${userText}"` }] });
         </div>
       )}
 
+      {/* ── Agent Switcher ── */}
+      {activeTab === "chat" && (
+        <div style={{padding:"5px 12px",borderBottom:"0.5px solid rgba(255,255,255,0.04)",display:"flex",gap:5,alignItems:"center",flexShrink:0,overflowX:"auto"}}>
+          <span style={{fontSize:9,color:"#555",fontFamily:"'DM Mono',monospace",flexShrink:0,marginRight:4,letterSpacing:"0.06em"}}>MODE</span>
+          {AGENTS.map(agent => {
+            const on = activeAgent === agent.id;
+            return (
+              <button key={agent.id}
+                onClick={() => setActiveAgent(on ? null : agent.id)}
+                style={{
+                  padding:"4px 12px",
+                  background: on ? "rgba(200,168,75,0.18)" : "rgba(255,255,255,0.06)",
+                  border: on ? "0.5px solid rgba(200,168,75,0.7)" : "0.5px solid rgba(255,255,255,0.15)",
+                  borderRadius:20, color: on ? "#C8A84B" : "#aaa",
+                  fontSize:11, cursor:"pointer", whiteSpace:"nowrap",
+                  fontFamily:"'DM Mono',monospace", letterSpacing:"0.05em",
+                  transition:"all 0.15s", display:"flex", alignItems:"center", gap:5,
+                }}>
+                {agent.emoji} {agent.label}
+              </button>
+            );
+          })}
+          {activeAgent && (
+            <span style={{fontSize:9,color:"#C8A84B",fontFamily:"'DM Mono',monospace",marginLeft:4,letterSpacing:"0.06em",flexShrink:0,fontWeight:600}}>
+              {activeAgent} ACTIVE
+            </span>
+          )}
+        </div>
+      )}
+
+      {activeTab === "chat" && activeAgent === "knockknock" && (
+        <div
+          style={{
+            padding: "6px 12px",
+            borderBottom: `1px solid ${KK.border}`,
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            flexShrink: 0,
+            background: KK.bg,
+            flexWrap: "wrap",
+          }}
+        >
+          <span style={{ fontSize: 9, color: KK.dim, fontFamily: "'DM Mono', monospace", letterSpacing: "0.06em" }}>VIEW</span>
+          {["dashboard", "chat"].map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              onClick={() => setKnockKnockUiMode(mode)}
+              style={{
+                padding: "4px 12px",
+                borderRadius: 20,
+                border: `1px solid ${knockKnockUiMode === mode ? KK.primary : KK.border}`,
+                background: knockKnockUiMode === mode ? `${KK.primary}22` : KK.surface,
+                color: knockKnockUiMode === mode ? KK.primary : KK.dim,
+                fontSize: 11,
+                cursor: "pointer",
+                fontFamily: "'DM Mono', monospace",
+                letterSpacing: "0.05em",
+              }}
+            >
+              {mode === "dashboard" ? "Dashboard" : "Chat"}
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* ── Body ── */}
       <div style={{flex:1,display:"flex",position:"relative",overflow:"hidden"}}>
 
         {/* Chat view */}
         {activeTab === "chat" && (
-          <div style={{flex:1,overflowY:"auto",padding:"12px 14px",display:"flex",flexDirection:"column",gap:10}}>
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, overflow: "hidden" }}>
+            {activeAgent === "knockknock" && knockKnockUiMode === "dashboard" && (
+              <KnockKnockCommandCenter callMakeTrigger={callMakeTrigger} />
+            )}
+            <div style={{ flex: 1, overflowY: "auto", padding: "12px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
             {messages.map((m,i)=>(
               <div key={i} style={{animation:"fadeIn 0.25s ease"}}>
                 <div style={{display:"flex",justifyContent:m.role==="user"?"flex-end":"flex-start"}}>
                   {m.role==="assistant"&&<div style={{width:22,height:22,borderRadius:"50%",background:"rgba(200,168,75,0.15)",border:"0.5px solid rgba(200,168,75,0.3)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,color:"#C8A84B",fontWeight:700,flexShrink:0,marginRight:7,marginTop:2}}>J</div>}
                   <div style={{maxWidth:"80%",padding:"8px 12px",borderRadius:m.role==="user"?"12px 12px 2px 12px":"12px 12px 12px 2px",background:m.role==="user"?"rgba(200,168,75,0.1)":"rgba(255,255,255,0.04)",border:m.role==="user"?"0.5px solid rgba(200,168,75,0.2)":"0.5px solid rgba(255,255,255,0.07)",fontSize:13,lineHeight:1.65,color:m.role==="user"?"#E8DFC8":"#D4CEBE"}}>
-                    {typeof m.content==="string"?fmt(m.content):m.content}
+                    {typeof m.content==="string"
+                      ? <>{fmt(m.content)}{loading && i===messages.length-1 && m.role==="assistant" && <span style={{display:"inline-block",width:2,height:14,background:"#C8A84B",marginLeft:2,verticalAlign:"middle",animation:"blink 1s step-end infinite"}}/>}</>
+                      : m.content}
                   </div>
                 </div>
                 {m.emailDrafts?.map((e,j)=><div key={j} style={{marginLeft:30}}><EmailCard {...e}/></div>)}
@@ -621,6 +2562,16 @@ Request: "${userText}"` }] });
               </div>
             ))}
             {activeTools.length>0&&<div style={{display:"flex",flexDirection:"column",gap:4,marginLeft:30}}>{activeTools.map((t,i)=><ToolBadge key={i} {...t}/>)}</div>}
+            {isSpeaking&&(
+              <div style={{display:"flex",alignItems:"center",gap:7,marginLeft:0}}>
+                <div style={{width:22,height:22,borderRadius:"50%",background:"rgba(200,168,75,0.15)",border:"0.5px solid rgba(200,168,75,0.3)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,color:"#C8A84B",fontWeight:700,flexShrink:0}}>J</div>
+                <div style={{display:"flex",alignItems:"center",gap:3,padding:"8px 12px",background:"rgba(255,255,255,0.04)",border:"0.5px solid rgba(255,255,255,0.08)",borderRadius:12}}>
+                  {[0,1,2,3,4].map(i=>(
+                    <div key={i} style={{width:3,height:16,background:"#C8A84B",borderRadius:2,animation:"speakPulse 0.8s ease-in-out infinite",animationDelay:`${i*0.12}s`}}/>
+                  ))}
+                </div>
+              </div>
+            )}
             {loading&&!activeTools.length&&(
               <div style={{display:"flex",alignItems:"flex-start",gap:7}}>
                 <div style={{width:22,height:22,borderRadius:"50%",background:"rgba(200,168,75,0.15)",border:"0.5px solid rgba(200,168,75,0.3)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,color:"#C8A84B",fontWeight:700,flexShrink:0}}>J</div>
@@ -628,6 +2579,7 @@ Request: "${userText}"` }] });
               </div>
             )}
             <div ref={bottomRef}/>
+          </div>
           </div>
         )}
 
@@ -643,7 +2595,7 @@ Request: "${userText}"` }] });
 
       {/* ── Input (chat only) ── */}
       {activeTab === "chat" && (
-        <div style={{padding:"8px 12px",borderTop:"0.5px solid rgba(255,255,255,0.07)",flexShrink:0}}>
+        <div style={{padding:"8px 12px",paddingBottom:"calc(8px + env(safe-area-inset-bottom))",borderTop:"0.5px solid rgba(255,255,255,0.07)",flexShrink:0}}>
           <div style={{display:"flex",gap:8,alignItems:"flex-end",background:"rgba(255,255,255,0.04)",border:"0.5px solid rgba(255,255,255,0.1)",borderRadius:12,padding:"7px 8px 7px 12px"}}>
             <textarea value={input} onChange={e=>setInput(e.target.value)} onKeyDown={handleKey}
               placeholder="Command J.A.R.V.I.S. — email, GHL, strategy, ClosingPilot..."
@@ -651,6 +2603,18 @@ Request: "${userText}"` }] });
               style={{flex:1,background:"transparent",border:"none",color:"#E8E3D9",fontSize:13,lineHeight:1.6,maxHeight:90,overflowY:"auto",caretColor:"#C8A84B"}}
               onInput={e=>{e.target.style.height="auto";e.target.style.height=Math.min(e.target.scrollHeight,90)+"px";}}
             />
+            <button onClick={() => setVoiceEnabled(v => !v)}
+              title={voiceEnabled ? "Voice on — click to mute" : "Voice off — click to enable"}
+              style={{width:30,height:30,borderRadius:"50%",background:voiceEnabled?"rgba(200,168,75,0.15)":"rgba(255,255,255,0.05)",border:voiceEnabled?"0.5px solid rgba(200,168,75,0.4)":"0.5px solid rgba(255,255,255,0.1)",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,transition:"all 0.15s"}}>
+              <span style={{fontSize:14}}>{voiceEnabled ? "🔊" : "🔇"}</span>
+            </button>
+            <button onClick={startListening} disabled={isListening || loading}
+              style={{width:30,height:30,borderRadius:"50%",background:isListening?"rgba(200,168,75,0.2)":"rgba(255,255,255,0.05)",border:isListening?"0.5px solid rgba(200,168,75,0.6)":"0.5px solid rgba(255,255,255,0.1)",cursor:isListening?"default":"pointer",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,transition:"all 0.15s",animation:isListening?"micPulse 1.2s ease-out infinite":""}}>
+              {isListening
+                ? <div style={{width:8,height:8,borderRadius:"50%",background:"#C8A84B",animation:"pulse 1.2s ease-in-out infinite"}}/>
+                : <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><rect x="9" y="2" width="6" height="12" rx="3" stroke="#888" strokeWidth="2"/><path d="M5 10a7 7 0 0014 0" stroke="#888" strokeWidth="2" strokeLinecap="round"/><line x1="12" y1="19" x2="12" y2="22" stroke="#888" strokeWidth="2" strokeLinecap="round"/></svg>
+              }
+            </button>
             <button className="send-btn" onClick={()=>sendMessage()} disabled={loading||!input.trim()}
               style={{width:30,height:30,borderRadius:"50%",background:input.trim()&&!loading?"#C8A84B":"rgba(255,255,255,0.05)",border:"none",cursor:input.trim()&&!loading?"pointer":"default",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,transition:"all 0.15s"}}>
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none">
@@ -660,6 +2624,12 @@ Request: "${userText}"` }] });
             </button>
           </div>
           <p style={{fontSize:9,color:"#2a2a2a",textAlign:"center",marginTop:5,letterSpacing:"0.04em",fontFamily:"'DM Mono',monospace"}}>JARVIS · EMAIL · GHL · MEMORY · IDEAS ACTIVE</p>
+        </div>
+      )}
+      {isSpeaking && (
+        <div style={{position:"fixed",top:0,left:0,width:"100%",height:"100%",zIndex:49,background:"rgba(6,6,10,0.92)",transition:"opacity 0.5s",display:"flex",alignItems:"center",justifyContent:"center"}}>
+          <VoiceVisualizer analyserRef={analyserRef}/>
+          <div style={{position:"absolute",bottom:40,left:0,right:0,textAlign:"center",fontSize:10,color:"rgba(200,168,75,0.4)",fontFamily:"'DM Mono',monospace",letterSpacing:"0.2em"}}>JARVIS SPEAKING</div>
         </div>
       )}
     </div>
