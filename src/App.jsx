@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 
 const GHL_WEBHOOK = "https://services.leadconnectorhq.com/hooks/D1dTmgY5G8SuVs91hoBJ/webhook-trigger/0e2f8ae2-2470-43d5-ab40-c86a8c17d2df";
 const ANTHROPIC_KEY = import.meta.env.VITE_ANTHROPIC_KEY;
@@ -489,6 +489,27 @@ const kkDaysUntil = (y, m0, d) => {
   start.setHours(0, 0, 0, 0);
   end.setHours(0, 0, 0, 0);
   return Math.max(0, Math.ceil((end - start) / 86400000));
+};
+
+const KK_AGENT_NAMES = {
+  KfvUTmcRVmp0FSTLTgwZ: "Tasha",
+  bpW13lvxngMK91iJoLYo: "Cory",
+  luT7JPtoxLVchOq4xWtO: "Nate",
+};
+
+const kkTimeAgo = (input) => {
+  if (!input) return "";
+  const ms = typeof input === "number" ? input : Date.parse(input);
+  if (!Number.isFinite(ms)) return "";
+  const diff = Date.now() - ms;
+  if (diff < 0) return "just now";
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
 };
 
 const KNOCKKNOCK_SYSTEM_PROMPT = `You are the KnockKnock Commander Agent inside JARVIS. You run Matt Bright's AI lead generation system for iHome Team at Keller Williams Kingsport TN.
@@ -1066,6 +1087,19 @@ const parseContactSearchResults = (res) => {
   return Array.isArray(c) ? c : null;
 };
 
+const KK_TOOL_RECENT_LEADS = 5585451;
+const KK_TOOL_RECENT_COMMS = 5585452;
+
+const parseRecentLeads = (res) => {
+  const c = res?.outputs?.tool_output?.data?.contacts;
+  return Array.isArray(c) ? c : null;
+};
+
+const parseRecentComms = (res) => {
+  const c = res?.outputs?.tool_output?.data?.conversations;
+  return Array.isArray(c) ? c : null;
+};
+
 /** Tabbed GHL / Make ops dashboard shown when KnockKnock mode is on (lives in App.jsx). */
 function KnockKnockCommandCenter({ callMakeTrigger }) {
   const [tab, setTab] = useState("dashboard");
@@ -1086,6 +1120,12 @@ function KnockKnockCommandCenter({ callMakeTrigger }) {
     property_city: "",
     property_zip: "",
   });
+  const [recentLeads, setRecentLeads] = useState(null);
+  const [recentLeadsError, setRecentLeadsError] = useState(null);
+  const [recentComms, setRecentComms] = useState(null);
+  const [recentCommsError, setRecentCommsError] = useState(null);
+  const [activityLoading, setActivityLoading] = useState(false);
+  const [activityUpdatedAt, setActivityUpdatedAt] = useState(null);
 
   const fbDays = kkDaysUntil(2026, 5, 15);
 
@@ -1108,6 +1148,40 @@ function KnockKnockCommandCenter({ callMakeTrigger }) {
       cancelled = true;
     };
   }, [tab, callMakeTrigger]);
+
+  const loadActivity = useCallback(async () => {
+    setActivityLoading(true);
+    try {
+      const [leadsRes, commsRes] = await Promise.all([
+        callMakeTrigger({ scenario_id: KK_TOOL_RECENT_LEADS, data: {} }),
+        callMakeTrigger({ scenario_id: KK_TOOL_RECENT_COMMS, data: {} }),
+      ]);
+      const leads = parseRecentLeads(leadsRes);
+      setRecentLeads(leads);
+      setRecentLeadsError(leads == null ? "Could not read leads from response." : null);
+      const comms = parseRecentComms(commsRes);
+      setRecentComms(comms);
+      setRecentCommsError(comms == null ? "Could not read comms from response." : null);
+      setActivityUpdatedAt(Date.now());
+    } catch (e) {
+      setRecentLeadsError(String(e?.message || e));
+      setRecentCommsError(String(e?.message || e));
+    }
+    setActivityLoading(false);
+  }, [callMakeTrigger]);
+
+  useEffect(() => {
+    if (tab !== "activity") return;
+    let cancelled = false;
+    loadActivity();
+    const interval = setInterval(() => {
+      if (!cancelled) loadActivity();
+    }, 45000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [tab, loadActivity]);
 
   const runSearch = async () => {
     const q = contactQuery.trim();
@@ -1164,6 +1238,7 @@ function KnockKnockCommandCenter({ callMakeTrigger }) {
 
   const tabs = [
     { id: "dashboard", label: "Dashboard" },
+    { id: "activity", label: "Activity" },
     { id: "contacts", label: "Contacts" },
     { id: "pipelines", label: "Pipelines" },
     { id: "scenarios", label: "Scenarios" },
@@ -1288,6 +1363,92 @@ function KnockKnockCommandCenter({ callMakeTrigger }) {
                   </div>
                 ))}
               </div>
+            </div>
+          </div>
+        )}
+
+        {tab === "activity" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div style={{ fontSize: 10, color: KK.dim, fontFamily: "'DM Mono', monospace" }}>
+                {activityUpdatedAt ? `Updated ${kkTimeAgo(activityUpdatedAt)}` : "Not loaded yet"}
+              </div>
+              <button
+                type="button"
+                onClick={loadActivity}
+                disabled={activityLoading}
+                style={{
+                  padding: "6px 12px",
+                  borderRadius: 8,
+                  border: `1px solid ${KK.primary}`,
+                  background: `${KK.primary}22`,
+                  color: KK.primary,
+                  cursor: activityLoading ? "wait" : "pointer",
+                  fontSize: 11,
+                  fontFamily: "'DM Mono', monospace",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                }}
+              >
+                {activityLoading && <span style={{ ...kkSpinnerStyle, width: 12, height: 12 }} aria-hidden />}
+                {activityLoading ? "Refreshing…" : "Refresh"}
+              </button>
+            </div>
+
+            <div style={{ ...card }}>
+              <div style={{ fontSize: 10, color: KK.success, letterSpacing: "0.1em", marginBottom: 8, fontFamily: "'DM Mono', monospace" }}>🟢 LEADS COMING IN</div>
+              {recentLeadsError && <div style={{ fontSize: 12, color: KK.danger }}>{recentLeadsError}</div>}
+              {!recentLeadsError && recentLeads == null && <div style={{ fontSize: 12, color: KK.dim }}>Loading…</div>}
+              {!recentLeadsError && recentLeads != null && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: 280, overflowY: "auto" }}>
+                  {recentLeads.length === 0 && <div style={{ fontSize: 12, color: KK.dim }}>No leads yet.</div>}
+                  {recentLeads.map((c) => {
+                    const name = [c.firstNameRaw, c.lastNameRaw].filter(Boolean).join(" ") || c.contactName || "—";
+                    const agent = c.assignedTo ? (KK_AGENT_NAMES[c.assignedTo] || c.assignedTo) : null;
+                    return (
+                      <div key={c.id} style={{ padding: 10, borderRadius: 8, border: `1px solid ${KK.border}`, background: KK.bg, fontSize: 11, color: KK.text, lineHeight: 1.5 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                          <span style={{ fontWeight: 600, color: KK.primary }}>{name}</span>
+                          <span style={{ color: KK.dim, fontFamily: "'DM Mono', monospace", fontSize: 10, whiteSpace: "nowrap" }}>{kkTimeAgo(c.dateAdded)}</span>
+                        </div>
+                        {c.source && <div><span style={{ color: KK.dim }}>source</span> {c.source}</div>}
+                        {agent && <div><span style={{ color: KK.dim }}>agent</span> {agent}</div>}
+                        {Array.isArray(c.tags) && c.tags.length > 0 && (
+                          <div style={{ color: KK.dim, fontSize: 10, marginTop: 2 }}>{c.tags.join(" \u00b7 ")}</div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div style={{ ...card }}>
+              <div style={{ fontSize: 10, color: KK.accent, letterSpacing: "0.1em", marginBottom: 8, fontFamily: "'DM Mono', monospace" }}>📤 COMMS ACTIVITY</div>
+              {recentCommsError && <div style={{ fontSize: 12, color: KK.danger }}>{recentCommsError}</div>}
+              {!recentCommsError && recentComms == null && <div style={{ fontSize: 12, color: KK.dim }}>Loading…</div>}
+              {!recentCommsError && recentComms != null && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: 280, overflowY: "auto" }}>
+                  {recentComms.length === 0 && <div style={{ fontSize: 12, color: KK.dim }}>No activity yet.</div>}
+                  {recentComms.map((m) => {
+                    const dir = m.lastMessageDirection === "outbound" ? "\u2192 out" : "\u2190 in";
+                    const dirColor = m.lastMessageDirection === "outbound" ? KK.accent : KK.success;
+                    const channel = m.lastMessageType === "TYPE_EMAIL" ? "✉️" : m.lastMessageType === "TYPE_SMS" ? "💬" : "•";
+                    const snippet = (m.lastMessageBody || "").replace(/\s+/g, " ").trim().slice(0, 110);
+                    return (
+                      <div key={m.id} style={{ padding: 10, borderRadius: 8, border: `1px solid ${KK.border}`, background: KK.bg, fontSize: 11, color: KK.text, lineHeight: 1.5 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                          <span style={{ fontWeight: 600, color: KK.primary }}>{channel} {m.contactName || m.fullName || "—"}</span>
+                          <span style={{ color: KK.dim, fontFamily: "'DM Mono', monospace", fontSize: 10, whiteSpace: "nowrap" }}>{kkTimeAgo(m.lastMessageDate)}</span>
+                        </div>
+                        <div style={{ color: dirColor, fontSize: 10, fontFamily: "'DM Mono', monospace", marginTop: 2 }}>{dir}</div>
+                        {snippet && <div style={{ color: KK.dim, marginTop: 2 }}>{snippet}{(m.lastMessageBody || "").length > 110 ? "…" : ""}</div>}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </div>
         )}
